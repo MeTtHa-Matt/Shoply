@@ -1,4 +1,4 @@
-const CACHE_NAME = 'shoply-shell-v18';
+const CACHE_NAME = 'shoply-shell-v21';
 const APP_SHELL = ['./', './index.php?page=login', './assets/css/app.css', './assets/js/app.js', './manifest.webmanifest', './assets/icon.svg'];
 
 self.addEventListener('install', event => {

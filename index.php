@@ -709,5 +709,5 @@ if ($page === 'home' && $user) {
     <?php endif; ?>
     <footer class="footer"><span>© <?= date('Y') ?> Shoply</span><span>Simplement utile.</span></footer>
 </main>
-<script src="assets/js/app.js?v=31" defer></script>
+<script src="assets/js/app.js?v=42" defer></script>
 </body></html>

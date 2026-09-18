@@ -1,0 +1,4 @@
+<IfModule mod_headers.c>
+    Header always unset Permissions-Policy
+    Header always set Permissions-Policy "microphone=*"
+</IfModule>
