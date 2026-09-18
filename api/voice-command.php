@@ -22,8 +22,8 @@ function voice_http_json(string $url, array $headers, array $payload): array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
         CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 25,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => 12,
     ]);
     $body = curl_exec($curl);
     $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
@@ -75,8 +75,9 @@ function voice_extract_json(string $text): array
     ];
 }
 
-function voice_prompt(string $transcription, array $listNames): string
+function voice_prompt(string $transcription, array $listNames, ?array $pendingContext = null): string
 {
+    $context = $pendingContext ? ' Contexte de la demande précédente à reprendre: ' . json_encode($pendingContext, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . '. La nouvelle phrase est la réponse de l’utilisateur à ce contexte.' : '';
     return 'Shoply: transforme la demande en JSON strict avec les clés action, target_list, item, additions, message_to_user. '
         . 'Actions: add, create_list, clarify, out_of_scope. Listes: '
         . json_encode(array_values($listNames), JSON_UNESCAPED_UNICODE) . '. Demande: '
@@ -85,25 +86,39 @@ function voice_prompt(string $transcription, array $listNames): string
         . 'Les transcriptions vocales peuvent être phonétiques, approximatives, séparées ou collées: rapproche la prononciation de la liste disponible sans inventer une nouvelle liste. '
         . 'target_list doit contenir uniquement le nom canonique de la liste, sans « la liste »; il doit reprendre le nom demandé même si la liste manque. '
         . 'add seulement si article et liste sont clairs. '
-        . 'Pour plusieurs ajouts, additions=[{"target_list":"...","item":"..."}]. Sinon additions=[]. '
-        . 'clarify si ambigu ou liste absente; create_list seulement si création explicitement demandée; out_of_scope hors courses. JSON uniquement.';
+        . 'Conserve exactement les accents et caractères français des articles dans item (par exemple « blé » doit rester « blé », jamais « ble »), car le texte sera affiché et lu à voix haute. Pour plusieurs ajouts, sépare chaque article, y compris dans une suite comme « element 1 element 2 et element 3 » ou « blé, farine et sucre »; ne conserve jamais « et » ou « virgule » dans un article; additions=[{"target_list":"...","item":"element 1"},{"target_list":"...","item":"element 2"},{"target_list":"...","item":"element 3"}]. Sinon additions=[]. '
+        . 'clarify si ambigu ou liste absente; create_list seulement si création explicitement demandée; out_of_scope hors courses. JSON uniquement.'
+        . $context;
 }
 
 function voice_normalize(string $value): string
 {
-    $value = mb_strtolower(trim($value));
-    return strtr($value, ['à' => 'a', 'â' => 'a', 'ä' => 'a', 'ç' => 'c', 'é' => 'e', 'è' => 'e', 'ê' => 'e', 'ë' => 'e', 'î' => 'i', 'ï' => 'i', 'ô' => 'o', 'ö' => 'o', 'ù' => 'u', 'û' => 'u', 'ü' => 'u', 'ÿ' => 'y', 'œ' => 'oe']);
+    return mb_strtolower(trim($value), 'UTF-8');
+}
+
+function voice_fold(string $value): string
+{
+    $value = voice_normalize($value);
+    $value = preg_replace('/\p{M}+/u', '', $value) ?? $value;
+    return strtr($value, [
+        'à' => 'a', 'á' => 'a', 'â' => 'a', 'ã' => 'a', 'ä' => 'a', 'å' => 'a',
+        'æ' => 'ae', 'ç' => 'c', 'è' => 'e', 'é' => 'e', 'ê' => 'e', 'ë' => 'e',
+        'ì' => 'i', 'í' => 'i', 'î' => 'i', 'ï' => 'i', 'ñ' => 'n',
+        'ò' => 'o', 'ó' => 'o', 'ô' => 'o', 'õ' => 'o', 'ö' => 'o', 'ø' => 'o',
+        'œ' => 'oe', 'ù' => 'u', 'ú' => 'u', 'û' => 'u', 'ü' => 'u',
+        'ý' => 'y', 'ÿ' => 'y', 'ß' => 'ss',
+    ]);
 }
 
 function voice_item_key(string $value): string
 {
-    $value = voice_normalize($value);
+    $value = voice_fold($value);
     return trim(preg_replace('/[^a-z0-9]+/u', '', $value) ?? '');
 }
 
 function voice_list_key(string $value): string
 {
-    $value = voice_normalize($value);
+    $value = voice_fold($value);
     $value = preg_replace('/^(?:la|le|les|ma|mes)?\s*liste\s+/u', '', $value) ?? $value;
     return trim($value);
 }
@@ -143,6 +158,31 @@ function voice_same_list(string $left, string $right): bool
     return voice_list_similarity($left, $right) >= 76;
 }
 
+function voice_split_items(string $itemPart): array
+{
+    $itemPart = preg_replace('/\s+(?:virgule|point[- ]virgule)\s+/u', ', ', trim($itemPart)) ?? trim($itemPart);
+    $parts = preg_split('/\s+(?:et|puis|ainsi que)\s+|\s*[,;]\s*/u', $itemPart, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $items = [];
+    foreach ($parts as $part) {
+        $hasTrailingConjunction = preg_match('/\s+(?:et|puis|ainsi que)$/iu', trim($part)) === 1;
+        $numberedParts = preg_split('/\s+(?=(?:element|article|produit)\s+\d+\b)/iu', trim($part), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        foreach ($numberedParts as $numberedPart) {
+            $item = trim(preg_replace('/\s+(?:et|puis|ainsi que)$/iu', '', $numberedPart) ?? $numberedPart);
+            $simpleWords = preg_split('/\s+/u', $item, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            if ($hasTrailingConjunction && count($simpleWords) > 1 && !preg_match('/\d/u', $item) && !preg_match('/\b(?:de|du|des|la|le|les|et)\b/iu', $item)) {
+                foreach ($simpleWords as $simpleWord) {
+                    $items[] = $simpleWord;
+                }
+                continue;
+            }
+            if ($item !== '') {
+                $items[] = $item;
+            }
+        }
+    }
+    return $items;
+}
+
 function voice_resolve_list(string $spokenName, array $availableLists): ?array
 {
     $best = null;
@@ -164,9 +204,64 @@ function voice_resolve_list(string $spokenName, array $availableLists): ?array
     return $best;
 }
 
-function voice_fast_parse(string $transcription, array $availableLists): ?array
+function voice_fast_parse_multiple_lists(string $transcription, array $availableLists): ?array
 {
     $normalized = voice_normalize($transcription);
+    $matches = [];
+    foreach ($availableLists as $availableList) {
+        $listName = voice_normalize((string) $availableList['name']);
+        $offset = 0;
+        while (($position = mb_strpos($normalized, $listName, $offset)) !== false) {
+            $matches[] = ['position' => $position, 'length' => mb_strlen($listName), 'list' => $availableList];
+            $offset = $position + mb_strlen($listName);
+        }
+    }
+    usort($matches, static fn (array $left, array $right): int => $left['position'] <=> $right['position'] ?: $right['length'] <=> $left['length']);
+    $selected = [];
+    $cursor = 0;
+    foreach ($matches as $match) {
+        if ($match['position'] < $cursor) {
+            continue;
+        }
+        $segment = trim(mb_substr($normalized, $cursor, $match['position'] - $cursor));
+        $segment = trim(preg_replace('/^(?:et|puis|ensuite|et puis)\s+/u', '', $segment) ?? $segment);
+        $segment = preg_replace('/^.*\b(?:acheter|achete|ajouter|ajoute|rajoute|mettre|mets|met|note|noter|inscris|inscrire|prends|prendre|veux|voudrais|faudra|faut|besoin|pense|penser|oublie|oublier)\b\s*/u', '', $segment) ?? $segment;
+        $segment = trim(preg_replace('/(?:\b(?:la|le|les|ma|mes)?\s*liste)\s*$/u', '', $segment) ?? $segment);
+        $segment = trim(preg_replace('/\s+(?:a|à|dans|sur|pour)\s*$/u', '', $segment) ?? $segment);
+        if ($segment === '') {
+            continue;
+        }
+        $items = voice_split_items($segment);
+        foreach ($items as $item) {
+            $selected[] = ['target_list' => $match['list']['name'], 'item' => trim($item)];
+        }
+        $cursor = $match['position'] + $match['length'];
+    }
+    if (count($selected) < 2 || count(array_unique(array_column($selected, 'target_list'))) < 2) {
+        return null;
+    }
+    return ['action' => 'add', 'target_list' => $selected[0]['target_list'], 'item' => $selected[0]['item'], 'additions' => $selected, 'message_to_user' => null];
+}
+
+function voice_fast_parse(string $transcription, array $availableLists, ?array $defaultList = null): ?array
+{
+    $normalized = voice_normalize($transcription);
+    $multipleLists = voice_fast_parse_multiple_lists($transcription, $availableLists);
+    if ($multipleLists !== null) {
+        return $multipleLists;
+    }
+    if ($defaultList && preg_match('/^(?:ajoute|ajouter|rajoute|rajouter|mets|mettre|note|noter|inscris|inscrire|pense(?: à)?|n’oublie pas de|il faut|il me faut|je veux|je voudrais)\b\s+(.+)$/iu', $normalized, $defaultMatch)) {
+        $itemPart = trim($defaultMatch[1]);
+        $itemPart = preg_replace('/\s+(?:a|à|dans|sur|pour)\s+(?:(?:la|le|ma|mes)\s+)?liste\s*$/iu', '', $itemPart) ?? $itemPart;
+        $itemPart = trim(preg_replace('/^(?:des|du|de la|de l\x27|un|une|le|la)\s+/u', '', $itemPart) ?? $itemPart);
+        if ($itemPart !== '' && mb_strlen($itemPart) <= 180) {
+            $items = voice_split_items($itemPart);
+            $additions = array_map(static fn (string $item): array => ['target_list' => $defaultList['name'], 'item' => trim($item)], $items);
+            if ($additions) {
+                return ['action' => 'add', 'target_list' => $defaultList['name'], 'item' => $additions[0]['item'], 'additions' => $additions, 'message_to_user' => null];
+            }
+        }
+    }
     usort($availableLists, static fn (array $left, array $right): int => mb_strlen($right['name']) <=> mb_strlen($left['name']));
     foreach ($availableLists as $availableList) {
         $listName = voice_normalize((string) $availableList['name']);
@@ -185,7 +280,7 @@ function voice_fast_parse(string $transcription, array $availableLists): ?array
         if ($itemPart === '' || mb_strlen($itemPart) > 180) {
             continue;
         }
-        $items = preg_split('/\s+(?:et|puis|ainsi que)\s+|\s*,\s*/u', $itemPart, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $items = voice_split_items($itemPart);
         $additions = array_map(static function (string $item) use ($availableList): array {
             $item = trim(preg_replace('/^(?:des|du|de la|de l\x27|un|une|le|la)\s+/u', '', trim($item)) ?? trim($item));
             return ['target_list' => $availableList['name'], 'item' => $item];
@@ -220,7 +315,7 @@ function voice_ai_json(string $prompt): array
     if ($geminiKey !== '') {
         try {
             $response = voice_http_json(
-                'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode((string) env_value('GEMINI_MODEL', 'gemini-3.5-flash')) . ':generateContent?key=' . rawurlencode($geminiKey),
+                'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode((string) env_value('GEMINI_MODEL', 'gemini-flash-lite-latest')) . ':generateContent?key=' . rawurlencode($geminiKey),
                 [],
                 [
                     'systemInstruction' => ['parts' => [['text' => $system]]],
@@ -238,7 +333,7 @@ function voice_ai_json(string $prompt): array
     if ($groqKey !== '') {
         try {
             $response = voice_http_json('https://api.groq.com/openai/v1/chat/completions', ['Authorization: Bearer ' . $groqKey], [
-                'model' => env_value('GROQ_MODEL', 'qwen/qwen3.8-27b'),
+                'model' => env_value('GROQ_MODEL', 'llama-3.1-8b-instant'),
                 'temperature' => 0,
                 'max_tokens' => 160,
                 'response_format' => ['type' => 'json_object'],
@@ -274,29 +369,55 @@ try {
     $confirmCreate = filter_var($_POST['confirm_create'] ?? false, FILTER_VALIDATE_BOOLEAN);
     $pendingList = trim((string) ($_POST['pending_target_list'] ?? ''));
     $pendingItem = trim((string) ($_POST['pending_item'] ?? ''));
+    $pendingContext = [];
+    $pendingContextJson = trim((string) ($_POST['pending_context'] ?? ''));
+    if ($pendingContextJson !== '') {
+        $decodedPendingContext = json_decode($pendingContextJson, true);
+        if (is_array($decodedPendingContext)) {
+            $pendingContext = $decodedPendingContext;
+            $pendingList = trim((string) ($pendingContext['target_list'] ?? $pendingList));
+            $pendingItem = trim((string) ($pendingContext['item'] ?? $pendingItem));
+        }
+    }
+    $pendingAdditions = is_array($pendingContext['additions'] ?? null) ? $pendingContext['additions'] : [];
     if ($confirmCreate) {
         $affirmative = preg_match('/^(oui|ouais|yes|d[’\']accord|d’accord|bien sûr|bien sur|crée(?:-la| la)?|vas[- ]?y|fais[- -]le|confirme)\b/iu', $transcription) === 1;
-        if (!$affirmative || $pendingList === '' || $pendingItem === '' || mb_strlen($pendingList) > 120 || mb_strlen($pendingItem) > 180) {
-            json_response(['ok' => true, 'action' => 'clarify', 'message_to_user' => VOICE_NOT_UNDERSTOOD_MESSAGE]);
+        if ($affirmative && $pendingList !== '' && ($pendingItem !== '' || $pendingAdditions) && mb_strlen($pendingList) <= 120) {
+            if (voice_resolve_list($pendingList, $availableLists) !== null) {
+                json_response(['ok' => true, 'action' => 'clarify', 'message_to_user' => 'Cette liste existe déjà. Que souhaitez-vous y ajouter ?', 'pending' => ['target_list' => $pendingList, 'item' => $pendingItem, 'additions' => $pendingAdditions]]);
+            }
+            $itemsToCreate = $pendingAdditions ?: [['item' => $pendingItem]];
+            $itemsToCreate = array_values(array_filter($itemsToCreate, static fn (array $addition): bool => is_string($addition['item'] ?? null) && trim($addition['item']) !== '' && mb_strlen(trim($addition['item'])) <= 180));
+            if (!$itemsToCreate) {
+                json_response(['ok' => true, 'action' => 'clarify', 'message_to_user' => VOICE_NOT_UNDERSTOOD_MESSAGE]);
+            }
+            $database->beginTransaction();
+            $createList = $database->prepare('INSERT INTO shopping_lists (user_id, name) VALUES (?, ?)');
+            $createList->execute([$userId, $pendingList]);
+            $newListId = (int) $database->lastInsertId();
+            $database->prepare('INSERT INTO shopping_list_members (list_id, user_id, role) VALUES (?, ?, \'owner\')')->execute([$newListId, $userId]);
+            $insertNewItem = $database->prepare('INSERT INTO shopping_items (list_id, label, position) VALUES (?, ?, ?)');
+            $createdLabels = [];
+            foreach ($itemsToCreate as $position => $addition) {
+                $label = trim((string) $addition['item']);
+                $insertNewItem->execute([$newListId, $label, $position + 1]);
+                $createdLabels[] = $label;
+            }
+            $database->commit();
+            json_response(['ok' => true, 'action' => 'add', 'list_id' => $newListId, 'items' => array_map(static fn (string $label): array => ['id' => 0, 'label' => $label, 'is_done' => false], $createdLabels), 'message_to_user' => 'Je crée la liste « ' . $pendingList . ' » et j’ajoute ' . implode(', ', $createdLabels) . '.']);
         }
-        foreach ($availableLists as $availableList) {
-        if (voice_resolve_list($pendingList, $availableLists) !== null) {
-            json_response(['ok' => true, 'action' => 'clarify', 'message_to_user' => 'Cette liste existe déjà. Que souhaitez-vous y ajouter ?']);
-        }
-        }
-        $database->beginTransaction();
-        $createList = $database->prepare('INSERT INTO shopping_lists (user_id, name) VALUES (?, ?)');
-        $createList->execute([$userId, $pendingList]);
-        $newListId = (int) $database->lastInsertId();
-        $database->prepare('INSERT INTO shopping_list_members (list_id, user_id, role) VALUES (?, ?, \'owner\')')->execute([$newListId, $userId]);
-        $insertNewItem = $database->prepare('INSERT INTO shopping_items (list_id, label, position) VALUES (?, ?, 1)');
-        $insertNewItem->execute([$newListId, $pendingItem]);
-        $database->commit();
-        json_response(['ok' => true, 'action' => 'add', 'list_id' => $newListId, 'item' => ['id' => (int) $database->lastInsertId(), 'label' => $pendingItem, 'is_done' => false], 'message_to_user' => 'Je crée la liste « ' . $pendingList . ' » et j’ajoute « ' . $pendingItem . ' ».']);
     }
-    $command = voice_fast_parse($transcription, $availableLists);
+    $currentListId = (int) ($_POST['list_id'] ?? 0);
+    $defaultList = null;
+    foreach ($availableLists as $availableList) {
+        if ((int) $availableList['id'] === $currentListId) {
+            $defaultList = $availableList;
+            break;
+        }
+    }
+    $command = $pendingContext ? null : voice_fast_parse($transcription, $availableLists, $defaultList);
     if ($command === null) {
-        $command = voice_ai_json(voice_prompt($transcription, array_column($availableLists, 'name')));
+        $command = voice_ai_json(voice_prompt($transcription, array_column($availableLists, 'name'), $pendingContext ?: null));
     }
 
     if ($command['action'] === 'out_of_scope') {
@@ -328,39 +449,48 @@ try {
     }
 
     $database->beginTransaction();
-    $position = $database->prepare('SELECT COALESCE(MAX(position), 0) + 1 FROM shopping_items WHERE list_id = ?');
     $insert = $database->prepare('INSERT INTO shopping_items (list_id, label, position) VALUES (?, ?, ?)');
     $notification = $database->prepare('INSERT INTO notifications (user_id, actor_id, type, message) VALUES (?, ?, ?, ?)');
     $responseItems = [];
     $messages = [];
     $duplicateMessages = [];
     $knownItemsByList = [];
+    $nextPositions = [];
+    $addedLabelsByList = [];
+    $listNamesById = [];
     foreach ($targets as $targetData) {
         $target = $targetData['list'];
         $item = $targetData['item'];
         $targetId = (int) $target['id'];
         if (!isset($knownItemsByList[$targetId])) {
-            $existingItems = $database->prepare('SELECT label FROM shopping_items WHERE list_id = ? FOR UPDATE');
+            $existingItems = $database->prepare('SELECT label, position FROM shopping_items WHERE list_id = ? FOR UPDATE');
             $existingItems->execute([$targetId]);
             $knownItemsByList[$targetId] = [];
+            $nextPositions[$targetId] = 1;
             foreach ($existingItems->fetchAll() as $existingItem) {
                 $knownItemsByList[$targetId][voice_item_key((string) $existingItem['label'])] = (string) $existingItem['label'];
+                $nextPositions[$targetId] = max($nextPositions[$targetId], (int) $existingItem['position'] + 1);
             }
+            $listNamesById[$targetId] = $target['name'];
         }
         $itemKey = voice_item_key($item);
         if ($itemKey !== '' && isset($knownItemsByList[$targetId][$itemKey])) {
             $duplicateMessages[] = '« ' . $item . ' » est déjà dans « ' . $target['name'] . ' »';
             continue;
         }
-        $position->execute([(int) $target['id']]);
-        $insert->execute([(int) $target['id'], $item, (int) $position->fetchColumn()]);
+        $itemPosition = $nextPositions[$targetId]++;
+        $insert->execute([$targetId, $item, $itemPosition]);
         $knownItemsByList[$targetId][$itemKey] = $item;
         $responseItems[] = ['list_id' => $targetId, 'label' => $item, 'is_done' => false];
         $messages[] = '« ' . $item . ' » à « ' . $target['name'] . ' »';
+        $addedLabelsByList[$targetId][] = $item;
+    }
+    foreach ($addedLabelsByList as $targetId => $labels) {
         $members = $database->prepare('SELECT user_id FROM shopping_list_members WHERE list_id = ? AND user_id <> ?');
-        $members->execute([(int) $target['id'], $userId]);
+        $members->execute([(int) $targetId, $userId]);
+        $message = mb_substr(current_user()['name'] . ' a ajouté ' . implode(', ', $labels) . ' à la liste « ' . $listNamesById[$targetId] . ' ».', 0, 255);
         foreach ($members->fetchAll() as $member) {
-            $notification->execute([(int) $member['user_id'], $userId, 'list_item_added', mb_substr(current_user()['name'] . ' a ajouté ' . $item . ' à la liste « ' . $target['name'] . ' ».', 0, 255)]);
+            $notification->execute([(int) $member['user_id'], $userId, 'list_item_added', $message]);
         }
     }
     $database->commit();

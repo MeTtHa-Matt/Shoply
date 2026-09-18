@@ -1,6 +1,7 @@
 (function () {
     'use strict';
     const csrf = document.querySelector('input[name="csrf_token"]');
+    const pendingFriendRequestIds = document.querySelector('[data-pending-friend-request-ids]');
     const list = document.querySelector('[data-list-id]');
     const noteForm = document.querySelector('.add-item-form');
     let noteEditor = null;
@@ -11,46 +12,43 @@
     let noteAwaitingReturn = false;
     const listIndex = document.querySelector('[data-list-index]');
     const bottomNav = document.querySelector('.bottom-nav');
+    let internalNavigation = false;
 
-    const addItemForm = document.querySelector('.add-item-form');
-    const voiceRecognitionApi = window.webkitSpeechRecognition || window.SpeechRecognition;
-    let voiceButton = null;
-    let voiceFeedback = null;
-    let voiceTranscript = null;
-    let voiceResponse = null;
-    let voiceState = null;
-    let pendingVoiceCommand = null;
-    if (csrf && (addItemForm || listIndex)) {
-        voiceButton = document.createElement('button');
-        voiceButton.className = 'voice-button';
-        voiceButton.type = 'button';
-        voiceButton.textContent = '🎙';
-        voiceButton.setAttribute('aria-label', 'Ajouter un article avec la voix');
-        voiceButton.title = 'Ajouter avec la voix';
-        voiceFeedback = document.createElement('div');
-        voiceFeedback.className = 'voice-feedback voice-dialog';
-        voiceFeedback.hidden = true;
-        voiceFeedback.setAttribute('aria-live', 'polite');
-        voiceFeedback.setAttribute('role', 'dialog');
-        voiceFeedback.setAttribute('aria-modal', 'true');
-        voiceFeedback.innerHTML = '<div class="voice-dialog-backdrop"></div><section class="voice-dialog-card" aria-labelledby="voice-dialog-title"><button class="voice-dialog-close" type="button" aria-label="Fermer">×</button><div class="voice-orb" aria-hidden="true">🎙</div><h2 id="voice-dialog-title">Je vous écoute</h2><p class="voice-dialog-state">Parlez naturellement...</p><p class="voice-dialog-line"><strong>Vous avez dit :</strong><span class="voice-transcript"></span></p><p class="voice-dialog-line"><strong>Réponse :</strong><span class="voice-response"></span></p></section></div>';
-        voiceTranscript = voiceFeedback.querySelector('.voice-transcript');
-        voiceResponse = voiceFeedback.querySelector('.voice-response');
-        voiceState = voiceFeedback.querySelector('.voice-dialog-state');
-        voiceFeedback.querySelector('.voice-dialog-close').addEventListener('click', function () { voiceFeedback.classList.remove('is-open'); voiceFeedback.hidden = true; });
-        if (addItemForm) {
-            const submitButton = addItemForm.querySelector('button[type="submit"]');
-            addItemForm.insertBefore(voiceButton, submitButton);
-        } else {
-            voiceButton.classList.add('list-index-voice-button');
-            const listIndexHeading = listIndex.querySelector('.list-index-head');
-            if (listIndexHeading) listIndexHeading.appendChild(voiceButton);
+    function sessionMarkerExists() {
+        try { return window.sessionStorage.getItem('shoply_session_active') === '1'; } catch (error) { return false; }
+    }
+
+    function setSessionMarker() {
+        try { window.sessionStorage.setItem('shoply_session_active', '1'); } catch (error) {}
+    }
+
+    function clearSessionMarker() {
+        try { window.sessionStorage.removeItem('shoply_session_active'); } catch (error) {}
+    }
+
+    if (document.body.dataset.userId !== '0' && document.body.dataset.persistentAuth !== 'true' && !sessionMarkerExists()) {
+        const returnToken = document.querySelector('input[name="csrf_token"]');
+        if (returnToken && navigator.sendBeacon) {
+            const logoutBody = new FormData();
+            logoutBody.append('csrf_token', returnToken.value);
+            navigator.sendBeacon('index.php?page=logout', logoutBody);
+            window.setTimeout(function () { window.location.replace('index.php?page=login'); }, 100);
         }
-        document.body.appendChild(voiceFeedback);
     }
 
     window.requestAnimationFrame(function () {
         document.body.classList.add('is-ready');
+    });
+
+    document.querySelectorAll('[data-password-toggle]').forEach(function (toggle) {
+        toggle.addEventListener('click', function () {
+            const input = toggle.parentElement.querySelector('input');
+            const visible = input.type === 'text';
+            input.type = visible ? 'password' : 'text';
+            toggle.setAttribute('aria-pressed', visible ? 'false' : 'true');
+            toggle.setAttribute('aria-label', visible ? 'Afficher le mot de passe' : 'Masquer le mot de passe');
+            toggle.classList.toggle('is-visible', !visible);
+        });
     });
 
     document.querySelectorAll('a[href]').forEach(function (link) {
@@ -60,20 +58,40 @@
             try { destination = new URL(link.href, window.location.href); } catch (error) { return; }
             if (destination.origin !== window.location.origin || destination.href === window.location.href) return;
             event.preventDefault();
+            internalNavigation = true;
             document.body.classList.add('is-exiting');
             window.setTimeout(function () { window.location.assign(destination.href); }, 180);
         });
     });
 
     document.querySelectorAll('.auth-body form[method="post"], form[action*="page=logout"]').forEach(function (form) {
-        form.addEventListener('submit', function () {
-            document.body.classList.add(form.action.indexOf('page=logout') !== -1 ? 'is-logging-out' : 'is-submitting');
+        form.addEventListener('submit', function (event) {
+            if (document.body.dataset.page === 'login') setSessionMarker();
+            const isLogout = form.action.indexOf('page=logout') !== -1;
+            if (isLogout) {
+                event.preventDefault();
+                clearSessionMarker();
+                document.body.classList.add('is-logging-out');
+                window.setTimeout(function () { form.submit(); }, 3000);
+            } else {
+                document.body.classList.add('is-submitting');
+            }
             var button = form.querySelector('button[type="submit"]');
             if (button) {
                 button.setAttribute('aria-busy', 'true');
                 button.disabled = true;
             }
         });
+    });
+
+    document.addEventListener('submit', function () { internalNavigation = true; }, true);
+    window.addEventListener('pagehide', function () {
+        if (internalNavigation || document.body.dataset.persistentAuth === 'true' || document.body.dataset.userId === '0') return;
+        const token = document.querySelector('input[name="csrf_token"]');
+        if (!token || !navigator.sendBeacon) return;
+        const body = new FormData();
+        body.append('csrf_token', token.value);
+        navigator.sendBeacon('index.php?page=logout', body);
     });
 
     if (bottomNav && window.matchMedia('(max-width: 760px)').matches) {
@@ -334,9 +352,27 @@
         }
         results.innerHTML = users.length ? users.map(function (user) {
             var name = (user.first_name + ' ' + user.last_name).trim();
-            return '<div class="user-result"><span class="user-avatar">' + escapeHtml(user.first_name.charAt(0).toUpperCase()) + '</span><div><strong>' + escapeHtml(name) + '</strong><small>' + escapeHtml(user.email) + '</small></div><form class="friend-request-form" method="post" action="index.php?page=home"><input type="hidden" name="csrf_token" value="' + escapeHtml(csrf.value) + '"><input type="hidden" name="action" value="send_friend_request"><input type="hidden" name="receiver_id" value="' + Number(user.id) + '"><button class="icon-button" type="submit" aria-label="Ajouter ' + escapeHtml(name) + '">+</button></form></div>';
+            var pending = user.request_status === 'pending';
+            return '<div class="user-result' + (pending ? ' is-sent' : '') + '"><span class="user-avatar">' + escapeHtml(user.first_name.charAt(0).toUpperCase()) + '</span><div><strong>' + escapeHtml(name) + '</strong><small>' + escapeHtml(user.email) + '</small></div><form class="friend-request-form" method="post" action="index.php?page=home"><input type="hidden" name="csrf_token" value="' + escapeHtml(csrf.value) + '"><input type="hidden" name="action" value="send_friend_request"><input type="hidden" name="receiver_id" value="' + Number(user.id) + '"><button class="icon-button friend-request-button' + (pending ? ' is-confirmed' : '') + '" type="submit" aria-label="' + (pending ? 'Demande envoyée à ' : 'Ajouter ') + escapeHtml(name) + '"' + (pending ? ' disabled' : '') + '>' + (pending ? '✓' : '+') + '</button></form></div>';
         }).join('') : '<div class="quiet-empty"><span>?</span><p>Aucun utilisateur trouvé.</p></div>';
     }
+
+    function syncPendingFriendRequestButtons() {
+        if (!pendingFriendRequestIds) return;
+        var pendingIds;
+        try { pendingIds = JSON.parse(pendingFriendRequestIds.dataset.pendingFriendRequestIds || '[]'); } catch (error) { return; }
+        document.querySelectorAll('.user-result form').forEach(function (form) {
+            var receiver = form.querySelector('input[name="receiver_id"]');
+            var button = form.querySelector('button');
+            if (!receiver || !button || pendingIds.indexOf(Number(receiver.value)) === -1) return;
+            form.closest('.user-result').classList.add('is-sent');
+            button.classList.add('friend-request-button', 'is-confirmed');
+            button.textContent = '✓';
+            button.setAttribute('aria-label', 'Demande envoyée, en attente de réponse');
+            button.disabled = true;
+        });
+    }
+    syncPendingFriendRequestButtons();
 
     document.querySelectorAll('.person-search').forEach(function (form) {
         var input = form.querySelector('input[type="search"]');
@@ -351,6 +387,7 @@
             }, 180);
         });
         form.addEventListener('submit', function (event) { event.preventDefault(); input.dispatchEvent(new Event('input')); });
+        if (input.value.trim()) input.dispatchEvent(new Event('input'));
     });
 
     document.addEventListener('submit', function (event) {
@@ -360,7 +397,7 @@
         var button = friendForm.querySelector('button');
         if (button) button.disabled = true;
         requestJson(friendForm.getAttribute('action') || 'index.php?page=home', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'fetch'}, body: new URLSearchParams(new FormData(friendForm)) })
-            .then(function (data) { if (!data.ok) throw new Error(data.message || 'request'); friendForm.closest('.user-result').classList.add('is-sent'); showToast('Demande envoyée.'); })
+            .then(function (data) { if (!data.ok) throw new Error(data.message || 'request'); friendForm.closest('.user-result').classList.add('is-sent'); button.classList.add('is-confirmed'); button.textContent = '✓'; button.setAttribute('aria-label', 'Demande envoyée, en attente de réponse'); button.disabled = true; showToast('Demande envoyée.'); })
             .catch(function () { showToast('La demande n’a pas pu être envoyée.'); if (button) button.disabled = false; });
     });
 
@@ -546,185 +583,6 @@
         });
     }
 
-    if (voiceButton && voiceRecognitionApi) {
-        function resetVoiceButton() {
-            voiceButton.disabled = false;
-            voiceButton.classList.remove('is-listening');
-            voiceButton.setAttribute('aria-label', 'Ajouter un article avec la voix');
-        }
-        function showVoiceFeedback(transcript, response) {
-            voiceFeedback.hidden = false;
-            voiceFeedback.classList.add('is-open');
-            if (voiceState) voiceState.textContent = response === 'Je vous écoute...' ? 'Parlez naturellement...' : 'Réponse reçue';
-            voiceTranscript.textContent = transcript || 'Écoute en cours...';
-            voiceResponse.textContent = response || '...';
-        }
-        function speakVoiceMessage(message) {
-            if (!message || !('speechSynthesis' in window)) return;
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(message);
-            utterance.lang = 'fr-FR';
-            utterance.rate = 1.16;
-            utterance.pitch = 1;
-            window.speechSynthesis.speak(utterance);
-        }
-        function closeVoiceFeedback() {
-            voiceFeedback.classList.remove('is-open');
-            voiceFeedback.hidden = true;
-        }
-
-        function secureVoiceContext() {
-            const hostname = window.location.hostname;
-            const localHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-            return window.isSecureContext === true && (window.location.protocol === 'https:' || localHost);
-        }
-
-        function requestMicrophoneAccess() {
-            if (!secureVoiceContext()) {
-                const origin = window.location.protocol + '//' + window.location.host;
-                const error = new Error('Chrome ne peut pas proposer l’autorisation du microphone sur ' + origin + '. Ouvrez Shoply en HTTPS (ou sur localhost pour les tests), puis réessayez.');
-                showVoiceError('configuration', error);
-                return Promise.reject(error);
-            }
-            if (document.permissionsPolicy && typeof document.permissionsPolicy.allowsFeature === 'function' && !document.permissionsPolicy.allowsFeature('microphone')) {
-                const error = new Error('La politique de sécurité du document bloque le microphone. Vérifiez l’en-tête Permissions-Policy ou l’attribut allow="microphone" si Shoply est intégré dans une iframe.');
-                showVoiceError('policy-blocked', error);
-                return Promise.reject(error);
-            }
-            if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-                const error = new Error('Le microphone est indisponible car cette page n’est pas dans un contexte sécurisé. Utilisez HTTPS ou localhost.');
-                showVoiceError('audio-capture', error);
-                return Promise.reject(error);
-            }
-            return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-                stream.getTracks().forEach(function (track) { track.stop(); });
-                return true;
-            }).catch(function (error) {
-                const code = error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError' ? 'not-allowed' : 'audio-capture';
-                showVoiceError(code, error);
-                throw error;
-            });
-        }
-
-        function recognitionErrorMessage(errorCode) {
-            const messages = {
-                'not-allowed': 'L’accès au microphone a été refusé. Autorisez le microphone dans les réglages du site ou du téléphone.',
-                'service-not-allowed': 'Le service de reconnaissance vocale n’est pas autorisé par ce navigateur.',
-                'audio-capture': 'Aucun microphone n’est disponible. Vérifiez les réglages audio de votre appareil.',
-                'network': 'Le service de reconnaissance vocale du navigateur est inaccessible. Vérifiez le réseau, un bloqueur ou essayez Chrome/Edge à jour.',
-                'no-speech': 'Aucune parole n’a été détectée. Parlez après le signal du microphone.',
-                'aborted': 'La reconnaissance vocale a été arrêtée.',
-                'language-not-supported': 'La langue française n’est pas disponible pour la reconnaissance vocale.',
-                'configuration': 'La saisie vocale nécessite HTTPS. Utilisez une adresse https:// ou localhost.',
-                'policy-blocked': 'Le navigateur bloque le microphone pour cette page. Si Shoply est dans une iframe, ajoutez allow="microphone". Sinon, vérifiez la politique de sécurité du site.',
-                'microphone-denied': 'L’accès au microphone a été refusé. Veuillez réinitialiser les autorisations dans les paramètres de votre navigateur ou de votre téléphone (icône de cadenas dans la barre d’adresse ou paramètres de la PWA).'
-            };
-            return messages[errorCode] || 'La reconnaissance vocale a rencontré une erreur. Réessayez.';
-        }
-
-        function showVoiceError(errorCode, error) {
-            let message = (errorCode === 'configuration' || errorCode === 'audio-capture' || errorCode === 'policy-blocked') && error instanceof Error ? error.message : recognitionErrorMessage(errorCode);
-            if (errorCode === 'not-allowed' && window.top !== window.self) {
-                message = 'Le microphone est bloqué dans cette iframe. Ajoutez allow="microphone" sur l’iframe ou ouvrez Shoply directement.';
-            }
-            console.error('[Shoply voice]', errorCode, error || message);
-            showVoiceFeedback('', message);
-            if (voiceState) voiceState.textContent = 'Erreur microphone';
-            speakVoiceMessage(message);
-            resetVoiceButton();
-        }
-
-        function handleMicrophoneClick() {
-            voiceButton.disabled = true;
-            voiceButton.classList.add('is-listening');
-            voiceButton.setAttribute('aria-label', 'Écoute en cours');
-            if (voiceState) voiceState.textContent = 'Autorisation du microphone...';
-            showVoiceFeedback('', 'Autorisez le microphone si votre navigateur vous le demande.');
-            requestMicrophoneAccess().then(function () {
-                if (voiceState) voiceState.textContent = 'Microphone autorisé. Parlez maintenant...';
-                const recognition = new voiceRecognitionApi();
-                recognition.lang = document.documentElement.lang || 'fr-FR';
-                recognition.interimResults = true;
-                recognition.continuous = false;
-                recognition.maxAlternatives = 3;
-                let finalTranscript = '';
-                let receivedResult = false;
-                let recognitionHadError = false;
-                recognition.onresult = function (event) {
-                    let transcript = '';
-                    for (let index = 0; index < event.results.length; index++) transcript += event.results[index][0].transcript;
-                    transcript = transcript.trim();
-                    showVoiceFeedback(transcript, 'Analyse en cours...');
-                    const lastResult = event.results[event.results.length - 1];
-                    if (!lastResult.isFinal || receivedResult) return;
-                    receivedResult = true;
-                    finalTranscript = transcript;
-                    if (!finalTranscript) return;
-                    const commandContext = pendingVoiceCommand;
-                    pendingVoiceCommand = null;
-                    const requestBody = { csrf_token: csrf.value, list_id: list ? list.dataset.listId : '0', transcription: finalTranscript };
-                    if (commandContext) {
-                        requestBody.confirm_create = 'true';
-                        requestBody.pending_target_list = commandContext.target_list || '';
-                        requestBody.pending_item = commandContext.item || '';
-                    }
-                    requestJson('api/voice-command.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' }, body: new URLSearchParams(requestBody) })
-                        .then(function (data) {
-                            if (!data.ok) throw new Error(data.message || 'La commande vocale a échoué.');
-                            showVoiceFeedback(finalTranscript, data.message_to_user);
-                            speakVoiceMessage(data.message_to_user);
-                            if (data.action === 'add') {
-                                showToast('Article ajouté à la liste.');
-                                if (list) syncItems();
-                                syncListSummaries();
-                                window.setTimeout(closeVoiceFeedback, 700);
-                            } else if (data.pending && data.pending.target_list && data.pending.item) {
-                                pendingVoiceCommand = data.pending;
-                                window.setTimeout(handleMicrophoneClick, 1100);
-                            }
-                        })
-                        .catch(function (error) {
-                            if (commandContext) pendingVoiceCommand = commandContext;
-                            console.error('[Shoply voice] Backend error', error);
-                            showVoiceFeedback(finalTranscript, error.message);
-                            showToast(error.message);
-                            speakVoiceMessage(error.message);
-                        });
-                };
-                recognition.onstart = function () {
-                    if (voiceState) voiceState.textContent = 'Je vous écoute. Parlez maintenant...';
-                };
-                recognition.onsoundstart = function () {
-                    if (voiceState) voiceState.textContent = 'Je vous entends...';
-                };
-                recognition.onerror = function (event) {
-                    if (event.error === 'aborted') {
-                        resetVoiceButton();
-                        return;
-                    }
-                    recognitionHadError = true;
-                    showVoiceError(event.error, event.message);
-                };
-                recognition.onend = function () {
-                    if (!receivedResult && !recognitionHadError) showVoiceError('no-speech');
-                    else resetVoiceButton();
-                };
-                try {
-                    recognition.start();
-                } catch (error) {
-                    showVoiceError('audio-capture', error);
-                }
-            }).catch(function (error) {
-                resetVoiceButton();
-            });
-        }
-
-        voiceButton.addEventListener('click', handleMicrophoneClick);
-    } else if (voiceButton) {
-        voiceButton.disabled = true;
-        voiceButton.title = 'La saisie vocale n’est pas disponible dans ce navigateur';
-    }
-
     if (list && csrf) {
         const leaveLink = document.createElement('a');
         leaveLink.className = 'button button-quiet leave-list-button';
@@ -818,7 +676,7 @@
 
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', function () {
-            navigator.serviceWorker.register('sw.js?v=18', { scope: './' }).catch(function () {});
+            navigator.serviceWorker.register('sw.js?v=22', { scope: './' }).catch(function () {});
         });
     }
 }());

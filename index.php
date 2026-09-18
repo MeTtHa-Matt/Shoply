@@ -11,17 +11,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verify_csrf()) {
         $errors[] = 'Votre session a expire. Rechargez la page puis recommencez.';
     } elseif ($page === 'register') {
-        $name = trim((string) ($_POST['name'] ?? ''));
-        $nameParts = preg_split('/\s+/', $name, 2);
-        $firstName = $nameParts[0] ?? '';
-        $lastName = $nameParts[1] ?? '';
+        $firstName = trim((string) ($_POST['first_name'] ?? ''));
+        $lastName = trim((string) ($_POST['last_name'] ?? ''));
         $email = strtolower(trim((string) ($_POST['email'] ?? '')));
         $password = (string) ($_POST['password'] ?? '');
         $passwordConfirmation = (string) ($_POST['password_confirmation'] ?? '');
-        remember_old(['name' => $name, 'email' => $email]);
+        remember_old(['first_name' => $firstName, 'last_name' => $lastName, 'email' => $email]);
 
-        if (mb_strlen($name) < 2 || mb_strlen($name) > 80) {
-            $errors['name'] = 'Indiquez un nom entre 2 et 80 caracteres.';
+        if (mb_strlen($firstName) < 2 || mb_strlen($firstName) > 50) {
+            $errors['first_name'] = 'Indiquez votre prenom.';
+        }
+        if (mb_strlen($lastName) < 2 || mb_strlen($lastName) > 80) {
+            $errors['last_name'] = 'Indiquez votre nom.';
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $errors['email'] = 'Saisissez une adresse email valide.';
@@ -51,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $database->commit();
 
                     try {
-                        send_verification_email($name, $email, app_url('index.php?page=verify&token=' . urlencode($rawToken)));
+                        send_verification_email(trim($firstName . ' ' . $lastName), $email, app_url('index.php?page=verify&token=' . urlencode($rawToken)));
                     } catch (Throwable $mailError) {
                         $database->prepare('DELETE FROM users WHERE id = ?')->execute([$userId]);
                         throw $mailError;
@@ -219,6 +220,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $notification->execute([(int) $member['user_id'], $userId, 'list_item_added', $message]);
                 }
             };
+            $notifyListMembersOfDeletion = static function (array $labels) use ($database, $listId, $userId): void {
+                if (!$labels) {
+                    return;
+                }
+                $listNameQuery = $database->prepare('SELECT name FROM shopping_lists WHERE id = ? LIMIT 1');
+                $listNameQuery->execute([$listId]);
+                $listName = (string) $listNameQuery->fetchColumn();
+                $count = count($labels);
+                $preview = implode(', ', array_slice($labels, 0, 5));
+                if ($count === 1) {
+                    $message = current_user()['name'] . ' a supprimé « ' . $preview . ' » de la liste « ' . $listName . ' ». ';
+                } else {
+                    $message = current_user()['name'] . ' a supprimé ' . $count . ' articles de la liste « ' . $listName . ' »' . ($preview !== '' ? ' : ' . $preview : '') . '. ';
+                }
+                $message = mb_substr($message, 0, 255);
+                $membersQuery = $database->prepare('SELECT user_id FROM shopping_list_members WHERE list_id = ? AND user_id <> ?');
+                $membersQuery->execute([$listId, $userId]);
+                $notification = $database->prepare('INSERT INTO notifications (user_id, actor_id, type, message) VALUES (?, ?, ?, ?)');
+                foreach ($membersQuery->fetchAll() as $member) {
+                    $notification->execute([(int) $member['user_id'], $userId, 'list_item_deleted', $message]);
+                }
+            };
+            $normaliseItemKey = static function (string $label): string {
+                $label = mb_strtolower(trim($label), 'UTF-8');
+                $label = preg_replace('/\p{M}+/u', '', $label) ?? $label;
+                $label = strtr($label, [
+                    'à' => 'a', 'á' => 'a', 'â' => 'a', 'ã' => 'a', 'ä' => 'a', 'å' => 'a',
+                    'æ' => 'ae', 'ç' => 'c', 'è' => 'e', 'é' => 'e', 'ê' => 'e', 'ë' => 'e',
+                    'ì' => 'i', 'í' => 'i', 'î' => 'i', 'ï' => 'i', 'ñ' => 'n',
+                    'ò' => 'o', 'ó' => 'o', 'ô' => 'o', 'õ' => 'o', 'ö' => 'o', 'ø' => 'o',
+                    'œ' => 'oe', 'ù' => 'u', 'ú' => 'u', 'û' => 'u', 'ü' => 'u',
+                    'ý' => 'y', 'ÿ' => 'y', 'ß' => 'ss',
+                ]);
+                $label = preg_replace('/[^a-z0-9]+/i', ' ', $label) ?? $label;
+                return trim(preg_replace('/\s+/', ' ', $label) ?? $label);
+            };
+            $deduplicateLabels = static function (array $labels) use ($normaliseItemKey): array {
+                $seen = [];
+                $unique = [];
+                foreach ($labels as $label) {
+                    $key = $normaliseItemKey((string) $label);
+                    if ($key === '' || isset($seen[$key])) {
+                        continue;
+                    }
+                    $seen[$key] = true;
+                    $unique[] = trim((string) $label);
+                }
+                return $unique;
+            };
 
             if ($action === 'add_item') {
                 $label = trim((string) ($_POST['label'] ?? ''));
@@ -226,6 +276,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $database->beginTransaction();
                     $lockList = $database->prepare('SELECT id FROM shopping_lists WHERE id = ? FOR UPDATE');
                     $lockList->execute([$listId]);
+                    $existingItems = $database->prepare('SELECT id, label FROM shopping_items WHERE list_id = ? ORDER BY position ASC, id ASC');
+                    $existingItems->execute([$listId]);
+                    foreach ($existingItems->fetchAll() as $existingItem) {
+                        if ($normaliseItemKey($label) === $normaliseItemKey((string) $existingItem['label'])) {
+                            $database->commit();
+                            if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'fetch') {
+                                json_response(['ok' => true, 'duplicate' => true, 'item' => ['id' => (int) $existingItem['id'], 'label' => $existingItem['label'], 'is_done' => false]]);
+                            }
+                            redirect('index.php?page=home&list_id=' . $listId);
+                        }
+                    }
                     $position = $database->prepare('SELECT COALESCE(MAX(position), 0) + 1 FROM shopping_items WHERE list_id = ?');
                     $position->execute([$listId]);
                     $insert = $database->prepare('INSERT INTO shopping_items (list_id, label, position) VALUES (?, ?, ?)');
@@ -253,6 +314,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 };
                 $labels = $normaliseNote((string) ($_POST['content'] ?? ''));
                 $baseLabels = $normaliseNote((string) ($_POST['base_content'] ?? ''));
+                $labels = $deduplicateLabels($labels);
+                $baseLabels = $deduplicateLabels($baseLabels);
                 if (count($labels) > 200 || array_filter($labels, static fn (string $label): bool => mb_strlen($label) > 180)) {
                     json_response(['ok' => false, 'message' => 'Une liste ne peut pas dépasser 200 articles de 180 caractères.'], 422);
                 }
@@ -262,6 +325,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $items = $database->prepare('SELECT id, label, is_done FROM shopping_items WHERE list_id = ? ORDER BY position ASC, id ASC');
                 $items->execute([$listId]);
                 $existingItems = $items->fetchAll();
+                $seenExistingLabels = [];
+                $duplicateItemIds = [];
+                foreach ($existingItems as $existingItem) {
+                    $key = $normaliseItemKey((string) $existingItem['label']);
+                    if ($key !== '' && isset($seenExistingLabels[$key])) {
+                        $duplicateItemIds[] = (int) $existingItem['id'];
+                        continue;
+                    }
+                    $seenExistingLabels[$key] = true;
+                }
+                if ($duplicateItemIds) {
+                    $deleteDuplicate = $database->prepare('DELETE FROM shopping_items WHERE id = ? AND list_id = ?');
+                    foreach ($duplicateItemIds as $duplicateItemId) {
+                        $deleteDuplicate->execute([$duplicateItemId, $listId]);
+                    }
+                    $existingItems = array_values(array_filter($existingItems, static fn (array $item): bool => !in_array((int) $item['id'], $duplicateItemIds, true)));
+                }
                 $currentLabels = array_map(static fn (array $item): string => (string) $item['label'], $existingItems);
                 $canReplace = $currentLabels === $baseLabels;
                 $mergedLabels = $labels;
@@ -297,6 +377,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 }
+                $mergedLabels = $deduplicateLabels($mergedLabels);
                 if (count($mergedLabels) > 200 || array_filter($mergedLabels, static fn (string $label): bool => mb_strlen($label) > 180)) {
                     $database->rollBack();
                     json_response(['ok' => false, 'message' => 'Une liste ne peut pas dépasser 200 articles de 180 caractères.'], 422);
@@ -313,20 +394,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 if ($canReplace && count($existingItems) > count($mergedLabels)) {
+                    $deletedLabels = array_map(static fn (array $item): string => (string) $item['label'], array_slice($existingItems, count($mergedLabels)));
                     $delete = $database->prepare('DELETE FROM shopping_items WHERE id = ? AND list_id = ?');
                     foreach (array_slice($existingItems, count($mergedLabels)) as $item) {
                         $delete->execute([$item['id'], $listId]);
                     }
+                } else {
+                    $deletedLabels = [];
                 }
                 $notifyListMembers($addedLabels);
+                $notifyListMembersOfDeletion($deletedLabels);
                 $database->commit();
                 json_response(['ok' => true, 'count' => count($mergedLabels), 'content' => implode("\n", $mergedLabels)]);
             }
 
             if ($action === 'delete_item') {
                 $itemId = (int) ($_POST['item_id'] ?? 0);
+                $itemQuery = $database->prepare('SELECT label FROM shopping_items WHERE id = ? AND list_id = ? LIMIT 1');
+                $itemQuery->execute([$itemId, $listId]);
+                $deletedItem = $itemQuery->fetch();
+                $database->beginTransaction();
                 $delete = $database->prepare('DELETE FROM shopping_items WHERE id = ? AND list_id = ?');
                 $delete->execute([$itemId, $listId]);
+                if ($deletedItem) {
+                    $notifyListMembersOfDeletion([(string) $deletedItem['label']]);
+                }
+                $database->commit();
                 redirect('index.php?page=home&list_id=' . $listId);
             }
 
@@ -452,6 +545,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($page === 'login') {
         $email = strtolower(trim((string) ($_POST['email'] ?? '')));
         $password = (string) ($_POST['password'] ?? '');
+        $rememberMe = filter_var($_POST['remember_me'] ?? false, FILTER_VALIDATE_BOOLEAN);
         remember_old(['email' => $email]);
         if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $password === '') {
             $errors[] = 'Adresse email ou mot de passe incorrect.';
@@ -468,8 +562,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     session_regenerate_id(true);
                     $displayName = trim($user['first_name'] . ' ' . $user['last_name']);
                     $_SESSION['user'] = ['id' => (int) $user['id'], 'name' => $displayName, 'email' => $user['email']];
+                    $_SESSION['show_welcome'] = true;
+                    if ($rememberMe) {
+                        $rememberToken = bin2hex(random_bytes(32));
+                        db()->prepare('INSERT INTO remember_tokens (user_id, token_hash, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 1 YEAR))')->execute([(int) $user['id'], hash('sha256', $rememberToken)]);
+                        set_remember_cookie($rememberToken);
+                    } else {
+                        set_remember_cookie('', true);
+                    }
                     clear_old();
-                    flash('success', 'Bienvenue ' . $displayName . '.');
                     redirect('index.php?page=home');
                 }
             } catch (Throwable $error) {
@@ -477,6 +578,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     } elseif ($page === 'logout') {
+        if (!empty($_COOKIE[remember_cookie_name()]) && preg_match('/^[a-f0-9]{64}$/', (string) $_COOKIE[remember_cookie_name()])) {
+            db()->prepare('DELETE FROM remember_tokens WHERE token_hash = ?')->execute([hash('sha256', (string) $_COOKIE[remember_cookie_name()])]);
+        }
+        set_remember_cookie('', true);
         $_SESSION = [];
         session_destroy();
         redirect('index.php?page=login');
@@ -511,6 +616,10 @@ if ($page === 'verify') {
 
 $flash = pull_flash();
 $user = current_user();
+$showWelcome = $user && !empty($_SESSION['show_welcome']);
+if ($showWelcome) {
+    unset($_SESSION['show_welcome']);
+}
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $user && in_array($page, ['login', 'register'], true)) {
     redirect('index.php?page=home');
 }
@@ -530,9 +639,9 @@ if ($page === 'home' && $user && isset($_GET['api'])) {
         if ($term === '') {
             json_response(['ok' => true, 'users' => []]);
         }
-        $query = $database->prepare('SELECT id, first_name, last_name, email FROM users WHERE id <> ? AND (first_name LIKE ? OR last_name LIKE ? OR CONCAT(first_name, \' \', last_name) LIKE ? OR email LIKE ?) ORDER BY first_name, last_name LIMIT 20');
+        $query = $database->prepare('SELECT u.id, u.first_name, u.last_name, u.email, CASE WHEN EXISTS (SELECT 1 FROM friendship_requests fr WHERE fr.sender_id = ? AND fr.receiver_id = u.id AND fr.status = \'pending\') THEN \'pending\' ELSE NULL END AS request_status FROM users u WHERE u.id <> ? AND (u.first_name LIKE ? OR u.last_name LIKE ? OR CONCAT(u.first_name, \' \', u.last_name) LIKE ? OR u.email LIKE ?) ORDER BY u.first_name, u.last_name LIMIT 20');
         $like = '%' . $term . '%';
-        $query->execute([$userId, $like, $like, $like, $like]);
+        $query->execute([$userId, $userId, $like, $like, $like, $like]);
         json_response(['ok' => true, 'users' => $query->fetchAll()]);
     }
     if ($_GET['api'] === 'list_items') {
@@ -597,6 +706,7 @@ $selectedItems = [];
 $members = [];
 $availableUsers = [];
 $searchUsers = [];
+$pendingFriendRequestIds = [];
 $notifications = [];
 $unreadNotifications = 0;
 if ($page === 'home' && $user) {
@@ -617,11 +727,14 @@ if ($page === 'home' && $user) {
     $availableUsers = $availableUsers->fetchAll();
     $searchTerm = trim((string) ($_GET['q'] ?? ''));
     if (in_array($view, ['shared', 'profile'], true) && $searchTerm !== '') {
-        $searchUsersQuery = db()->prepare('SELECT id, first_name, last_name, email FROM users WHERE id <> ? AND (first_name LIKE ? OR last_name LIKE ? OR CONCAT(first_name, \' \', last_name) LIKE ? OR email LIKE ?) ORDER BY first_name, last_name LIMIT 20');
+        $searchUsersQuery = db()->prepare('SELECT u.id, u.first_name, u.last_name, u.email, CASE WHEN EXISTS (SELECT 1 FROM friendship_requests fr WHERE fr.sender_id = ? AND fr.receiver_id = u.id AND fr.status = \'pending\') THEN \'pending\' ELSE NULL END AS request_status FROM users u WHERE u.id <> ? AND (u.first_name LIKE ? OR u.last_name LIKE ? OR CONCAT(u.first_name, \' \', u.last_name) LIKE ? OR u.email LIKE ?) ORDER BY u.first_name, u.last_name LIMIT 20');
         $like = '%' . $searchTerm . '%';
-        $searchUsersQuery->execute([(int) $user['id'], $like, $like, $like, $like]);
+        $searchUsersQuery->execute([(int) $user['id'], (int) $user['id'], $like, $like, $like, $like]);
         $searchUsers = $searchUsersQuery->fetchAll();
     }
+    $pendingFriendRequestsQuery = db()->prepare('SELECT receiver_id FROM friendship_requests WHERE sender_id = ? AND status = \'pending\'');
+    $pendingFriendRequestsQuery->execute([(int) $user['id']]);
+    $pendingFriendRequestIds = array_map('intval', array_column($pendingFriendRequestsQuery->fetchAll(), 'receiver_id'));
     $notificationQuery = db()->prepare('SELECT n.id, n.type, n.message, n.read_at, n.created_at, n.friendship_request_id, n.actor_id, fr.status AS friendship_status, TRIM(CONCAT(u.first_name, \' \', u.last_name)) AS actor_name FROM notifications n LEFT JOIN users u ON u.id = n.actor_id LEFT JOIN friendship_requests fr ON fr.id = n.friendship_request_id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 40');
     $notificationQuery->execute([(int) $user['id']]);
     $notifications = $notificationQuery->fetchAll();
@@ -657,16 +770,20 @@ if ($page === 'home' && $user) {
     <meta name="description" content="Shoply, vos courses plus simples, ensemble.">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="assets/css/app.css?v=38">
+    <link rel="stylesheet" href="assets/css/app.css?v=52">
+    <link rel="stylesheet" href="assets/css/siri.css?v=5">
     <title><?= e($title) ?> · Shoply</title>
 </head>
-<body class="<?= $user ? 'app-body' : 'auth-body' ?>" data-page="<?= e($page) ?>" data-user-id="<?= $user ? (int) $user['id'] : 0 ?>">
+<body class="<?= $user ? 'app-body' : 'auth-body' ?>" data-page="<?= e($page) ?>" data-user-id="<?= $user ? (int) $user['id'] : 0 ?>" data-persistent-auth="<?= !empty($_COOKIE[remember_cookie_name()]) ? 'true' : 'false' ?>">
 <div class="ambient ambient-one" aria-hidden="true"></div><div class="ambient ambient-two" aria-hidden="true"></div>
+<?php if ($showWelcome): ?><div class="welcome-screen" role="status" aria-live="polite"><strong>Bienvenue</strong><span><?= e($user['name']) ?></span></div><?php endif; ?>
+<?php if ($user): ?><div class="logout-screen" role="status" aria-live="polite"><strong>Déconnexion</strong><span class="logout-spinner" aria-hidden="true"></span></div><?php endif; ?>
 <main class="shell">
-    <header class="topbar"><a class="brand" href="index.php?page=<?= $user ? 'home' : 'login' ?>" aria-label="Shoply, accueil"><span class="brand-mark">S</span><span>shoply<span class="dot">.</span></span></a><?php if ($user): ?><a class="notification-link" href="index.php?page=home&view=notifications" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><?php if ($unreadNotifications > 0): ?><b><?= $unreadNotifications > 9 ? '9+' : $unreadNotifications ?></b><?php endif; ?></a><?php endif; ?></header>
+    <header class="topbar"><a class="brand" href="index.php?page=<?= $user ? 'home' : 'login' ?>" aria-label="Shoply, accueil"><span class="brand-mark">S</span><span>shoply<span class="dot">.</span></span></a><?php if ($user): ?><?php require ROOT_PATH . '/partials/siri.php'; ?><a class="notification-link" href="index.php?page=home&view=notifications" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><?php if ($unreadNotifications > 0): ?><b><?= $unreadNotifications > 9 ? '9+' : $unreadNotifications ?></b><?php endif; ?></a><?php endif; ?></header>
     <?php if ($page === 'home' && $user): ?>
         <section class="dashboard dashboard-<?= e($view) ?>">
             <input class="csrf-token" type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
+            <div data-pending-friend-request-ids="<?= e(json_encode($pendingFriendRequestIds, JSON_THROW_ON_ERROR)) ?>" hidden></div>
             <div class="shared-list-meta" data-shared-list-ids="<?= e(implode(',', $sharedListIds)) ?>" hidden></div>
             <div class="dashboard-heading"><div><div class="eyebrow">SHOPLY</div><h1><?= $view === 'shared' ? 'Partagées' : ($view === 'profile' ? 'Profil' : ($view === 'shop' ? 'Courses' : ($view === 'split' ? 'Répartir' : 'Mes listes'))) ?></h1></div></div>
             <?php if ($flash): ?><div class="notice notice-<?= e($flash['type']) ?>" role="status"><?= e($flash['message']) ?></div><?php endif; ?>
@@ -692,18 +809,19 @@ if ($page === 'home' && $user) {
         </section>
         <nav class="bottom-nav" aria-label="Navigation principale"><a class="nav-item <?= $view === 'lists' ? 'is-active' : '' ?>" href="index.php?page=home&view=lists"><span class="nav-icon">▤</span><span>Listes</span></a><a class="nav-item <?= $view === 'shop' ? 'is-active' : '' ?>" href="index.php?page=home&view=shop"><span class="nav-icon">✓</span><span>Courses</span></a><a class="nav-create" href="index.php?page=home&view=new" aria-label="Créer une liste"><span>+</span></a><a class="nav-item <?= $view === 'shared' ? 'is-active' : '' ?>" href="index.php?page=home&view=shared"><span class="nav-icon">↗</span><span>Partagé</span></a><a class="nav-item <?= $view === 'profile' ? 'is-active' : '' ?>" href="index.php?page=home&view=profile"><span class="nav-icon">○</span><span>Profil</span></a></nav>
     <?php else: ?>
-        <section class="auth-layout">
-            <aside class="intro"><div class="eyebrow">LISTES DE COURSES · 01</div><h1>Faire les courses, <em>sans y penser deux fois.</em></h1><p>Shoply rassemble vos envies, vos essentiels et les personnes avec qui vous les partagez.</p><div class="feature-list"><div><span>01</span><p><strong>Clair au premier regard</strong><br>Chaque produit trouve sa place.</p></div><div><span>02</span><p><strong>Ensemble, naturellement</strong><br>Une liste qui vit avec votre foyer.</p></div></div></aside>
+        <section class="auth-layout auth-layout-shoply">
+            <aside class="intro"><div class="auth-brand-mark">S</div><div class="eyebrow">SHOPLY</div><h1>Vos courses,<br><em>ensemble.</em></h1><p>Créez une liste. Ajoutez vos proches. C’est prêt.</p><div class="auth-signal"><span>LISTES PARTAGÉES</span><i></i><span>SIMPLEMENT UTILE</span></div></aside>
             <section class="auth-card" aria-labelledby="auth-title">
-                <div class="card-heading"><div><div class="eyebrow"><?= $isRegister ? 'NOUVEAU COMPTE' : 'BON RETOUR' ?></div><h2 id="auth-title"><?= e($title) ?></h2></div><span class="card-number">0<?= $isRegister ? '2' : '1' ?></span></div>
+                <div class="card-heading"><div><div class="eyebrow"><?= $isRegister ? 'NOUVEAU COMPTE' : 'VOTRE ESPACE' ?></div><h2 id="auth-title"><?= $isRegister ? 'Créer un compte' : 'Se connecter' ?></h2></div><span class="card-number">0<?= $isRegister ? '2' : '1' ?></span></div>
                 <?php if ($flash): ?><div class="notice notice-<?= e($flash['type']) ?>" role="status"><?= e($flash['message']) ?></div><?php endif; ?>
                 <?php if ($errors): ?><div class="notice notice-error" role="alert"><?= e(is_array($errors) ? (is_string(reset($errors)) ? reset($errors) : 'Verifiez les champs signales.') : $errors) ?></div><?php endif; ?>
                 <form method="post" novalidate>
                     <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
-                    <?php if ($isRegister): ?><label for="name">Votre prenom ou nom<input id="name" name="name" type="text" autocomplete="name" value="<?= old('name') ?>" required aria-invalid="<?= isset($errors['name']) ? 'true' : 'false' ?>"><?php if (isset($errors['name'])): ?><small class="field-error"><?= e($errors['name']) ?></small><?php endif; ?></label><?php endif; ?>
+                    <?php if ($isRegister): ?><div class="auth-name-fields"><label for="first-name">Prénom<input id="first-name" name="first_name" type="text" autocomplete="given-name" value="<?= old('first_name') ?>" required aria-invalid="<?= isset($errors['first_name']) ? 'true' : 'false' ?>"><?php if (isset($errors['first_name'])): ?><small class="field-error"><?= e($errors['first_name']) ?></small><?php endif; ?></label><label for="last-name">Nom<input id="last-name" name="last_name" type="text" autocomplete="family-name" value="<?= old('last_name') ?>" required aria-invalid="<?= isset($errors['last_name']) ? 'true' : 'false' ?>"><?php if (isset($errors['last_name'])): ?><small class="field-error"><?= e($errors['last_name']) ?></small><?php endif; ?></label></div><?php endif; ?>
                     <label for="email">Adresse email<input id="email" name="email" type="email" autocomplete="email" value="<?= old('email') ?>" required aria-invalid="<?= isset($errors['email']) ? 'true' : 'false' ?>"><?php if (isset($errors['email'])): ?><small class="field-error"><?= e($errors['email']) ?></small><?php endif; ?></label>
-                    <label for="password">Mot de passe<input id="password" name="password" type="password" autocomplete="<?= $isRegister ? 'new-password' : 'current-password' ?>" required><?php if ($isRegister): ?><small>8 caracteres minimum</small><?php endif; ?><?php if (isset($errors['password'])): ?><small class="field-error"><?= e($errors['password']) ?></small><?php endif; ?></label>
-                    <?php if ($isRegister): ?><label for="password_confirmation">Confirmer le mot de passe<input id="password_confirmation" name="password_confirmation" type="password" autocomplete="new-password" required><?php if (isset($errors['password_confirmation'])): ?><small class="field-error"><?= e($errors['password_confirmation']) ?></small><?php endif; ?></label><?php endif; ?>
+                    <label for="password">Mot de passe<span class="password-field"><input id="password" name="password" type="password" autocomplete="<?= $isRegister ? 'new-password' : 'current-password' ?>" required><button class="password-toggle" type="button" data-password-toggle aria-label="Afficher le mot de passe" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button></span><?php if ($isRegister): ?><small>8 caracteres minimum</small><?php endif; ?><?php if (isset($errors['password'])): ?><small class="field-error"><?= e($errors['password']) ?></small><?php endif; ?></label>
+                    <?php if (!$isRegister): ?><label class="remember-me"><input name="remember_me" type="checkbox" value="1"> <span>Se souvenir de moi</span></label><?php endif; ?>
+                    <?php if ($isRegister): ?><label for="password_confirmation">Confirmer le mot de passe<span class="password-field"><input id="password_confirmation" name="password_confirmation" type="password" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-label="Afficher la confirmation du mot de passe" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button></span><?php if (isset($errors['password_confirmation'])): ?><small class="field-error"><?= e($errors['password_confirmation']) ?></small><?php endif; ?></label><?php endif; ?>
                     <button class="button button-primary button-wide" type="submit"><?= $isRegister ? 'Creer mon compte' : 'Ouvrir mon espace' ?><span aria-hidden="true">↗</span></button>
                 </form>
                 <p class="switch-copy"><?= $isRegister ? 'Vous avez deja un compte ?' : 'Pas encore de compte ?' ?> <a href="index.php?page=<?= $isRegister ? 'login' : 'register' ?>"><?= $isRegister ? 'Se connecter' : 'Creer un compte' ?></a></p>
@@ -712,5 +830,6 @@ if ($page === 'home' && $user) {
     <?php endif; ?>
     <footer class="footer"><span>© <?= date('Y') ?> Shoply</span><span>Simplement utile.</span></footer>
 </main>
-<script src="assets/js/app.js?v=47" defer></script>
+<script src="assets/js/app.js?v=59" defer></script>
+<script type="module" src="assets/js/siri.js?v=5"></script>
 </body></html>

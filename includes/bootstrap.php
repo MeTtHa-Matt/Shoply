@@ -63,6 +63,7 @@ function db(): PDO
     ]);
     $pdo->exec("CREATE TABLE IF NOT EXISTS friend_groups (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, name VARCHAR(80) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_friend_group_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, UNIQUE KEY uq_friend_group_name (user_id, name)) ENGINE=InnoDB");
     $pdo->exec("CREATE TABLE IF NOT EXISTS friend_group_members (group_id INT UNSIGNED NOT NULL, friend_id INT UNSIGNED NOT NULL, assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (group_id, friend_id), CONSTRAINT fk_friend_group_member_group FOREIGN KEY (group_id) REFERENCES friend_groups(id) ON DELETE CASCADE, CONSTRAINT fk_friend_group_member_user FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS remember_tokens (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_remember_token_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, INDEX idx_remember_token_user (user_id), INDEX idx_remember_token_expiry (expires_at)) ENGINE=InnoDB");
     return $pdo;
 }
 
@@ -134,6 +135,44 @@ function current_user(): ?array
     return $_SESSION['user'] ?? null;
 }
 
+function remember_cookie_name(): string
+{
+    return 'shoply_remember';
+}
+
+function set_remember_cookie(string $token, bool $delete = false): void
+{
+    $secure = filter_var(env_value('SESSION_SECURE', 'false'), FILTER_VALIDATE_BOOLEAN);
+    setcookie(remember_cookie_name(), $delete ? '' : $token, [
+        'expires' => $delete ? time() - 3600 : time() + (86400 * 365),
+        'path' => '/',
+        'secure' => $secure,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+}
+
+function restore_remembered_user(): void
+{
+    if (current_user() || empty($_COOKIE[remember_cookie_name()])) {
+        return;
+    }
+    $token = (string) $_COOKIE[remember_cookie_name()];
+    if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+        set_remember_cookie('', true);
+        return;
+    }
+    $query = db()->prepare('SELECT u.id, u.first_name, u.last_name, u.email FROM remember_tokens rt INNER JOIN users u ON u.id = rt.user_id WHERE rt.token_hash = ? AND rt.expires_at > NOW() LIMIT 1');
+    $query->execute([hash('sha256', $token)]);
+    $user = $query->fetch();
+    if (!$user) {
+        set_remember_cookie('', true);
+        return;
+    }
+    session_regenerate_id(true);
+    $_SESSION['user'] = ['id' => (int) $user['id'], 'name' => trim($user['first_name'] . ' ' . $user['last_name']), 'email' => $user['email']];
+}
+
 function json_response(array $payload, int $status = 200): never
 {
     http_response_code($status);
@@ -141,3 +180,5 @@ function json_response(array $payload, int $status = 200): never
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
+
+restore_remembered_user();
