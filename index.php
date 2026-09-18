@@ -770,7 +770,7 @@ if ($page === 'home' && $user) {
     <meta name="description" content="Shoply, vos courses plus simples, ensemble.">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="assets/css/app.css?v=52">
+    <link rel="stylesheet" href="assets/css/app.css?v=54">
     <link rel="stylesheet" href="assets/css/siri.css?v=5">
     <title><?= e($title) ?> · Shoply</title>
 </head>
@@ -786,6 +786,7 @@ if ($page === 'home' && $user) {
             <div data-pending-friend-request-ids="<?= e(json_encode($pendingFriendRequestIds, JSON_THROW_ON_ERROR)) ?>" hidden></div>
             <div class="shared-list-meta" data-shared-list-ids="<?= e(implode(',', $sharedListIds)) ?>" hidden></div>
             <div class="dashboard-heading"><div><div class="eyebrow">SHOPLY</div><h1><?= $view === 'shared' ? 'Partagées' : ($view === 'profile' ? 'Profil' : ($view === 'shop' ? 'Courses' : ($view === 'split' ? 'Répartir' : 'Mes listes'))) ?></h1></div></div>
+            <aside class="pwa-install-card" data-pwa-install hidden aria-labelledby="pwa-install-title"><span class="pwa-install-icon" aria-hidden="true">↗</span><div><strong id="pwa-install-title">Shoply, toujours à portée de main</strong><small>Installez l’application pour retrouver vos listes plus vite.</small></div><button class="button button-primary pwa-install-button" type="button" data-pwa-install-action>Installer</button><button class="pwa-install-dismiss" type="button" data-pwa-install-dismiss aria-label="Masquer l’installation">×</button></aside>
             <?php if ($flash): ?><div class="notice notice-<?= e($flash['type']) ?>" role="status"><?= e($flash['message']) ?></div><?php endif; ?>
             <?php if ($view === 'new'): ?>
                 <section class="focus-panel"><div class="focus-icon">+</div><div class="eyebrow">NOUVELLE LISTE</div><h2>Qu'est-ce qu'on prépare ?</h2><p>Un nom simple suffit. Vous pourrez ajouter les articles juste après.</p><form class="create-list-focus" method="post" action="index.php?page=home"><input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="create_list"><label for="focus-list-name" class="sr-only">Nom de la liste</label><input id="focus-list-name" name="list_name" type="text" placeholder="Ex. Grand marché de samedi" maxlength="120" required autofocus><button class="button button-primary" type="submit">Créer la liste <span aria-hidden="true">→</span></button></form></section>
@@ -807,6 +808,7 @@ if ($page === 'home' && $user) {
                 </section>
             <?php endif; ?>
         </section>
+        <div class="pwa-ios-modal" data-pwa-ios-modal hidden aria-hidden="true"><div class="pwa-ios-backdrop" data-pwa-ios-close></div><section class="pwa-ios-dialog" role="dialog" aria-modal="true" aria-labelledby="pwa-ios-title"><button class="pwa-ios-close" type="button" data-pwa-ios-close aria-label="Fermer">×</button><span class="pwa-install-icon" aria-hidden="true">↗</span><h2 id="pwa-ios-title">Ajouter Shoply</h2><p>Installez Shoply sur votre écran d’accueil en quelques secondes.</p><ol class="pwa-ios-steps"><li><span>1</span><div>Dans Safari, touchez <strong>Partager</strong> <b aria-hidden="true">□↑</b></div></li><li><span>2</span><div>Cliquez sur <strong>« En voir plus »</strong> et scrollez vers le bas, puis choisissez <strong>Sur l’écran d’accueil</strong></div></li><li><span>3</span><div>Confirmez avec <strong>Ajouter</strong></div></li></ol><button class="button button-primary" type="button" data-pwa-ios-close>Compris</button></section></div>
         <nav class="bottom-nav" aria-label="Navigation principale"><a class="nav-item <?= $view === 'lists' ? 'is-active' : '' ?>" href="index.php?page=home&view=lists"><span class="nav-icon">▤</span><span>Listes</span></a><a class="nav-item <?= $view === 'shop' ? 'is-active' : '' ?>" href="index.php?page=home&view=shop"><span class="nav-icon">✓</span><span>Courses</span></a><a class="nav-create" href="index.php?page=home&view=new" aria-label="Créer une liste"><span>+</span></a><a class="nav-item <?= $view === 'shared' ? 'is-active' : '' ?>" href="index.php?page=home&view=shared"><span class="nav-icon">↗</span><span>Partagé</span></a><a class="nav-item <?= $view === 'profile' ? 'is-active' : '' ?>" href="index.php?page=home&view=profile"><span class="nav-icon">○</span><span>Profil</span></a></nav>
     <?php else: ?>
         <section class="auth-layout auth-layout-shoply">
@@ -830,6 +832,6 @@ if ($page === 'home' && $user) {
     <?php endif; ?>
     <footer class="footer"><span>© <?= date('Y') ?> Shoply</span><span>Simplement utile.</span></footer>
 </main>
-<script src="assets/js/app.js?v=59" defer></script>
+<script src="assets/js/app.js?v=63" defer></script>
 <script type="module" src="assets/js/siri.js?v=5"></script>
 </body></html>

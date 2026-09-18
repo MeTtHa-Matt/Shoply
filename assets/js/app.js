@@ -66,7 +66,10 @@
 
     document.querySelectorAll('.auth-body form[method="post"], form[action*="page=logout"]').forEach(function (form) {
         form.addEventListener('submit', function (event) {
-            if (document.body.dataset.page === 'login') setSessionMarker();
+            if (document.body.dataset.page === 'login') {
+                setSessionMarker();
+                try { window.sessionStorage.removeItem('shoply_pwa_install_dismissed'); } catch (error) {}
+            }
             const isLogout = form.action.indexOf('page=logout') !== -1;
             if (isLogout) {
                 event.preventDefault();
@@ -673,6 +676,56 @@
         });
     });
     document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && modal.classList.contains('is-open')) closeModal(); });
+
+    var pwaInstallCard = document.querySelector('[data-pwa-install]');
+    var pwaInstallAction = document.querySelector('[data-pwa-install-action]');
+    var pwaIosModal = document.querySelector('[data-pwa-ios-modal]');
+    var deferredInstallPrompt = null;
+    var isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    var isMobileDevice = isIos || /android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.matchMedia('(max-width: 900px)').matches);
+    var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    var pwaDismissed = false;
+    try { pwaDismissed = window.sessionStorage.getItem('shoply_pwa_install_dismissed') === '1'; } catch (error) {}
+
+    function showPwaInstallCard() {
+        if (pwaInstallCard && isMobileDevice && !isStandalone && !pwaDismissed) pwaInstallCard.hidden = false;
+    }
+    function closePwaIosModal() {
+        if (!pwaIosModal) return;
+        pwaIosModal.hidden = true;
+        pwaIosModal.setAttribute('aria-hidden', 'true');
+    }
+    window.addEventListener('beforeinstallprompt', function (event) {
+        event.preventDefault();
+        deferredInstallPrompt = event;
+        if (isMobileDevice && !isStandalone && !isIos) showPwaInstallCard();
+    });
+    window.addEventListener('appinstalled', function () {
+        deferredInstallPrompt = null;
+        if (pwaInstallCard) pwaInstallCard.hidden = true;
+    });
+    if (isIos && isMobileDevice && !isStandalone) showPwaInstallCard();
+    if (pwaInstallAction) pwaInstallAction.addEventListener('click', function () {
+        if (isIos) {
+            if (!pwaIosModal) return;
+            pwaIosModal.hidden = false;
+            pwaIosModal.setAttribute('aria-hidden', 'false');
+            var closeButton = pwaIosModal.querySelector('.pwa-ios-close');
+            if (closeButton) closeButton.focus();
+            return;
+        }
+        if (!deferredInstallPrompt) return;
+        deferredInstallPrompt.prompt();
+        deferredInstallPrompt.userChoice.finally(function () { deferredInstallPrompt = null; });
+    });
+    document.querySelectorAll('[data-pwa-install-dismiss]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            if (pwaInstallCard) pwaInstallCard.hidden = true;
+            try { window.sessionStorage.setItem('shoply_pwa_install_dismissed', '1'); } catch (error) {}
+        });
+    });
+    document.querySelectorAll('[data-pwa-ios-close]').forEach(function (control) { control.addEventListener('click', closePwaIosModal); });
+    document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closePwaIosModal(); });
 
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', function () {
