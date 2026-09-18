@@ -5,6 +5,7 @@ Shoply est une application web mobile-first de listes de courses partageables. E
 ## Fonctionnalites
 
 - creation de compte avec confirmation d'adresse email ;
+- recuperation et changement de mot de passe avec validation par email ;
 - connexion persistante et gestion de session securisee ;
 - creation, modification, partage et suivi de listes de courses ;
 - ajout d'articles, changement de statut et attribution a un membre ;
@@ -93,6 +94,7 @@ Les URLs de verification et de notification sont derivees automatiquement de la 
 A chaque ouverture de connexion PDO, Shoply nettoie automatiquement :
 
 - les jetons de verification et de connexion expires ;
+- les jetons de changement de mot de passe expires ;
 - les comptes non verifies apres 7 jours ;
 - les notifications apres 90 jours ;
 - les demandes d'amitie refusees apres 180 jours.

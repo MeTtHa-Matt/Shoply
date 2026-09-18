@@ -58,6 +58,7 @@ function retention_days(string $key, int $fallback): int
 function cleanup_expired_data(PDO $pdo): void
 {
     $pdo->exec('DELETE FROM email_verification_tokens WHERE expires_at < NOW() OR (used_at IS NOT NULL AND used_at < DATE_SUB(NOW(), INTERVAL 1 DAY))');
+    $pdo->exec('DELETE FROM password_reset_tokens WHERE expires_at < NOW() OR (used_at IS NOT NULL AND used_at < DATE_SUB(NOW(), INTERVAL 1 DAY))');
     $pdo->exec('DELETE FROM remember_tokens WHERE expires_at < NOW()');
 
     $notificationDays = retention_days('NOTIFICATION_RETENTION_DAYS', 90);
@@ -100,6 +101,7 @@ function db(): PDO
     $pdo->exec("CREATE TABLE IF NOT EXISTS friend_groups (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, name VARCHAR(80) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_friend_group_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, UNIQUE KEY uq_friend_group_name (user_id, name)) ENGINE=InnoDB");
     $pdo->exec("CREATE TABLE IF NOT EXISTS friend_group_members (group_id INT UNSIGNED NOT NULL, friend_id INT UNSIGNED NOT NULL, assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (group_id, friend_id), CONSTRAINT fk_friend_group_member_group FOREIGN KEY (group_id) REFERENCES friend_groups(id) ON DELETE CASCADE, CONSTRAINT fk_friend_group_member_user FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB");
     $pdo->exec("CREATE TABLE IF NOT EXISTS remember_tokens (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_remember_token_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, INDEX idx_remember_token_user (user_id), INDEX idx_remember_token_expiry (expires_at)) ENGINE=InnoDB");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, used_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_password_reset_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, INDEX idx_password_reset_user (user_id), INDEX idx_password_reset_expiry (expires_at)) ENGINE=InnoDB");
         $pdo->exec("CREATE TABLE IF NOT EXISTS user_onboarding (user_id INT UNSIGNED PRIMARY KEY, completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_onboarding_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB");
     ensure_retention_indexes($pdo);
     cleanup_expired_data($pdo);

@@ -10,6 +10,37 @@ $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verify_csrf()) {
         $errors[] = 'Votre session a expire. Rechargez la page puis recommencez.';
+    } elseif ($page === 'forgot_password') {
+        $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+        remember_old(['email' => $email]);
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors['email'] = 'Saisissez une adresse email valide.';
+        } else {
+            try {
+                $database = db();
+                $statement = $database->prepare('SELECT id, first_name, last_name, email FROM users WHERE email = ? AND email_verified_at IS NOT NULL LIMIT 1');
+                $statement->execute([$email]);
+                $account = $statement->fetch();
+                if ($account) {
+                    $database->prepare('DELETE FROM password_reset_tokens WHERE user_id = ?')->execute([(int) $account['id']]);
+                    $rawToken = bin2hex(random_bytes(32));
+                    $token = $database->prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR))');
+                    $token->execute([(int) $account['id'], hash('sha256', $rawToken)]);
+                    try {
+                        send_password_reset_email(trim($account['first_name'] . ' ' . $account['last_name']), $account['email'], app_url('index.php?page=reset_password&token=' . urlencode($rawToken)));
+                    } catch (Throwable $mailError) {
+                        $database->prepare('DELETE FROM password_reset_tokens WHERE token_hash = ?')->execute([hash('sha256', $rawToken)]);
+                        throw $mailError;
+                    }
+                }
+                clear_old();
+                flash('success', 'Si cette adresse correspond a un compte, un lien de reinitialisation vient d’etre envoye.');
+                redirect('index.php?page=login');
+            } catch (Throwable $error) {
+                error_log('[Shoply] Password reset request failed: ' . get_class($error) . ' - ' . $error->getMessage());
+                $errors[] = 'Impossible de traiter la demande pour le moment. Reessayez dans un instant.';
+            }
+        }
     } elseif ($page === 'register') {
         $firstName = trim((string) ($_POST['first_name'] ?? ''));
         $lastName = trim((string) ($_POST['last_name'] ?? ''));
@@ -581,6 +612,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errors[] = 'Le service est momentanement indisponible. Reessayez dans un instant.';
             }
         }
+    } elseif ($page === 'reset_password') {
+        $token = (string) ($_POST['token'] ?? '');
+        $password = (string) ($_POST['password'] ?? '');
+        $passwordConfirmation = (string) ($_POST['password_confirmation'] ?? '');
+        if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+            $errors[] = 'Ce lien de reinitialisation est invalide ou expire.';
+        }
+        if (strlen($password) < 8) {
+            $errors['password'] = 'Le mot de passe doit contenir au moins 8 caracteres.';
+        }
+        if ($password !== $passwordConfirmation) {
+            $errors['password_confirmation'] = 'Les mots de passe ne correspondent pas.';
+        }
+        if (!$errors) {
+            try {
+                $database = db();
+                $database->beginTransaction();
+                $statement = $database->prepare('SELECT id, user_id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > NOW() LIMIT 1');
+                $statement->execute([hash('sha256', $token)]);
+                $reset = $statement->fetch();
+                if (!$reset) {
+                    $database->rollBack();
+                    $errors[] = 'Ce lien de reinitialisation est invalide ou expire.';
+                } else {
+                    $database->prepare('UPDATE users SET password = ? WHERE id = ?')->execute([password_hash($password, PASSWORD_DEFAULT), (int) $reset['user_id']]);
+                    $database->prepare('UPDATE password_reset_tokens SET used_at = NOW() WHERE id = ?')->execute([(int) $reset['id']]);
+                    $database->prepare('DELETE FROM remember_tokens WHERE user_id = ?')->execute([(int) $reset['user_id']]);
+                    $database->commit();
+                    clear_old();
+                    flash('success', 'Votre mot de passe a ete modifie. Vous pouvez vous connecter.');
+                    redirect('index.php?page=login');
+                }
+            } catch (Throwable $error) {
+                if (isset($database) && $database->inTransaction()) {
+                    $database->rollBack();
+                }
+                $errors[] = 'Impossible de modifier le mot de passe pour le moment. Reessayez dans un instant.';
+            }
+        }
     } elseif ($page === 'logout') {
         if (!empty($_COOKIE[remember_cookie_name()]) && preg_match('/^[a-f0-9]{64}$/', (string) $_COOKIE[remember_cookie_name()])) {
             db()->prepare('DELETE FROM remember_tokens WHERE token_hash = ?')->execute([hash('sha256', (string) $_COOKIE[remember_cookie_name()])]);
@@ -588,6 +658,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         set_remember_cookie('', true);
         $_SESSION = [];
         session_destroy();
+        redirect('index.php?page=login');
+    }
+}
+
+if ($page === 'reset_password' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $resetToken = (string) ($_GET['token'] ?? '');
+    if (!preg_match('/^[a-f0-9]{64}$/', $resetToken)) {
+        flash('error', 'Ce lien de reinitialisation est invalide ou expire.');
+        redirect('index.php?page=login');
+    }
+    try {
+        $statement = db()->prepare('SELECT id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > NOW() LIMIT 1');
+        $statement->execute([hash('sha256', $resetToken)]);
+        if (!$statement->fetch()) {
+            flash('error', 'Ce lien de reinitialisation est invalide ou expire.');
+            redirect('index.php?page=login');
+        }
+    } catch (Throwable $error) {
+        flash('error', 'La reinitialisation est temporairement indisponible.');
         redirect('index.php?page=login');
     }
 }
@@ -703,7 +792,10 @@ if ($page === 'home' && $user && isset($_GET['api'])) {
     }
 }
 $isRegister = $page === 'register';
-$title = $page === 'home' ? 'Mes listes' : ($isRegister ? 'Creer un compte' : 'Se connecter');
+$isForgotPassword = $page === 'forgot_password';
+$isResetPassword = $page === 'reset_password';
+$resetToken = $isResetPassword ? (string) ($_GET['token'] ?? $_POST['token'] ?? '') : '';
+$title = $page === 'home' ? 'Mes listes' : ($isRegister ? 'Creer un compte' : ($isForgotPassword || $isResetPassword ? 'Mot de passe' : 'Se connecter'));
 $lists = [];
 $selectedList = null;
 $selectedItems = [];
@@ -823,10 +915,28 @@ if ($page === 'home' && $user) {
         <section class="auth-layout auth-layout-shoply">
             <aside class="intro"><div class="auth-brand-mark">S</div><div class="eyebrow">SHOPLY</div><h1>Vos courses,<br><em>ensemble.</em></h1><p>Créez une liste. Ajoutez vos proches. C’est prêt.</p><div class="auth-signal"><span>LISTES PARTAGÉES</span><i></i><span>SIMPLEMENT UTILE</span></div></aside>
             <section class="auth-card" aria-labelledby="auth-title">
-                <div class="card-heading"><div><div class="eyebrow"><?= $isRegister ? 'NOUVEAU COMPTE' : 'VOTRE ESPACE' ?></div><h2 id="auth-title"><?= $isRegister ? 'Créer un compte' : 'Se connecter' ?></h2></div><span class="card-number">0<?= $isRegister ? '2' : '1' ?></span></div>
+                <div class="card-heading"><div><div class="eyebrow"><?= $isRegister ? 'NOUVEAU COMPTE' : ($isForgotPassword || $isResetPassword ? 'SECURITE' : 'VOTRE ESPACE') ?></div><h2 id="auth-title"><?= $isRegister ? 'Créer un compte' : ($isForgotPassword ? 'Mot de passe oublié' : ($isResetPassword ? 'Nouveau mot de passe' : 'Se connecter')) ?></h2></div><span class="card-number">0<?= $isRegister ? '2' : ($isForgotPassword || $isResetPassword ? '3' : '1') ?></span></div>
                 <?php if ($flash): ?><div class="notice notice-<?= e($flash['type']) ?>" role="status"><?= e($flash['message']) ?></div><?php endif; ?>
                 <?php if ($errors): ?><div class="notice notice-error" role="alert"><?= e(is_array($errors) ? (is_string(reset($errors)) ? reset($errors) : 'Verifiez les champs signales.') : $errors) ?></div><?php endif; ?>
+                <?php if ($isForgotPassword): ?>
+                <p class="auth-help">Saisissez votre adresse email pour recevoir un lien de réinitialisation.</p>
                 <form method="post" novalidate>
+                    <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
+                    <label for="email">Adresse email<input id="email" name="email" type="email" autocomplete="email" value="<?= old('email') ?>" required aria-invalid="<?= isset($errors['email']) ? 'true' : 'false' ?>"><?php if (isset($errors['email'])): ?><small class="field-error"><?= e($errors['email']) ?></small><?php endif; ?></label>
+                    <button class="button button-primary button-wide" type="submit">Envoyer le lien <span aria-hidden="true">↗</span></button>
+                </form>
+                <p class="switch-copy"><a href="index.php?page=login">Retour à la connexion</a></p>
+                <?php elseif ($isResetPassword): ?>
+                <p class="auth-help">Choisissez un nouveau mot de passe d’au moins 8 caractères.</p>
+                <form method="post" novalidate>
+                    <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
+                    <input type="hidden" name="token" value="<?= e($resetToken) ?>">
+                    <label for="password">Nouveau mot de passe<span class="password-field"><input id="password" name="password" type="password" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-label="Afficher le mot de passe" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button></span><?php if (isset($errors['password'])): ?><small class="field-error"><?= e($errors['password']) ?></small><?php endif; ?></label>
+                    <label for="password_confirmation">Confirmer le mot de passe<span class="password-field"><input id="password_confirmation" name="password_confirmation" type="password" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-label="Afficher la confirmation du mot de passe" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button></span><?php if (isset($errors['password_confirmation'])): ?><small class="field-error"><?= e($errors['password_confirmation']) ?></small><?php endif; ?></label>
+                    <button class="button button-primary button-wide" type="submit">Modifier le mot de passe <span aria-hidden="true">↗</span></button>
+                </form>
+                <p class="switch-copy"><a href="index.php?page=login">Retour à la connexion</a></p>
+                <?php else: ?><form method="post" novalidate>
                     <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
                     <?php if ($isRegister): ?><div class="auth-name-fields"><label for="first-name">Prénom<input id="first-name" name="first_name" type="text" autocomplete="given-name" value="<?= old('first_name') ?>" required aria-invalid="<?= isset($errors['first_name']) ? 'true' : 'false' ?>"><?php if (isset($errors['first_name'])): ?><small class="field-error"><?= e($errors['first_name']) ?></small><?php endif; ?></label><label for="last-name">Nom<input id="last-name" name="last_name" type="text" autocomplete="family-name" value="<?= old('last_name') ?>" required aria-invalid="<?= isset($errors['last_name']) ? 'true' : 'false' ?>"><?php if (isset($errors['last_name'])): ?><small class="field-error"><?= e($errors['last_name']) ?></small><?php endif; ?></label></div><?php endif; ?>
                     <label for="email">Adresse email<input id="email" name="email" type="email" autocomplete="email" value="<?= old('email') ?>" required aria-invalid="<?= isset($errors['email']) ? 'true' : 'false' ?>"><?php if (isset($errors['email'])): ?><small class="field-error"><?= e($errors['email']) ?></small><?php endif; ?></label>
@@ -835,7 +945,8 @@ if ($page === 'home' && $user) {
                     <?php if ($isRegister): ?><label for="password_confirmation">Confirmer le mot de passe<span class="password-field"><input id="password_confirmation" name="password_confirmation" type="password" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle aria-label="Afficher la confirmation du mot de passe" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button></span><?php if (isset($errors['password_confirmation'])): ?><small class="field-error"><?= e($errors['password_confirmation']) ?></small><?php endif; ?></label><?php endif; ?>
                     <button class="button button-primary button-wide" type="submit"><?= $isRegister ? 'Creer mon compte' : 'Ouvrir mon espace' ?><span aria-hidden="true">↗</span></button>
                 </form>
-                <p class="switch-copy"><?= $isRegister ? 'Vous avez deja un compte ?' : 'Pas encore de compte ?' ?> <a href="index.php?page=<?= $isRegister ? 'login' : 'register' ?>"><?= $isRegister ? 'Se connecter' : 'Creer un compte' ?></a></p>
+                <?php if (!$isRegister): ?><p class="switch-copy"><a href="index.php?page=forgot_password">Mot de passe oublié ?</a></p><?php endif; ?>
+                <p class="switch-copy"><?= $isRegister ? 'Vous avez deja un compte ?' : 'Pas encore de compte ?' ?> <a href="index.php?page=<?= $isRegister ? 'login' : 'register' ?>"><?= $isRegister ? 'Se connecter' : 'Creer un compte' ?></a></p><?php endif; ?>
             </section>
         </section>
     <?php endif; ?>
