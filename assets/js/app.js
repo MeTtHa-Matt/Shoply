@@ -19,6 +19,7 @@
     let voiceTranscript = null;
     let voiceResponse = null;
     let voiceState = null;
+    let pendingVoiceCommand = null;
     if (csrf && (addItemForm || listIndex)) {
         voiceButton = document.createElement('button');
         voiceButton.className = 'voice-button';
@@ -561,7 +562,15 @@
         function speakVoiceMessage(message) {
             if (!message || !('speechSynthesis' in window)) return;
             window.speechSynthesis.cancel();
-            window.speechSynthesis.speak(new SpeechSynthesisUtterance(message));
+            const utterance = new SpeechSynthesisUtterance(message);
+            utterance.lang = 'fr-FR';
+            utterance.rate = 1.16;
+            utterance.pitch = 1;
+            window.speechSynthesis.speak(utterance);
+        }
+        function closeVoiceFeedback() {
+            voiceFeedback.classList.remove('is-open');
+            voiceFeedback.hidden = true;
         }
 
         function secureVoiceContext() {
@@ -636,7 +645,8 @@
                 const recognition = new voiceRecognitionApi();
                 recognition.lang = document.documentElement.lang || 'fr-FR';
                 recognition.interimResults = true;
-                recognition.maxAlternatives = 1;
+                recognition.continuous = false;
+                recognition.maxAlternatives = 3;
                 let finalTranscript = '';
                 let receivedResult = false;
                 let recognitionHadError = false;
@@ -650,22 +660,42 @@
                     receivedResult = true;
                     finalTranscript = transcript;
                     if (!finalTranscript) return;
-                    requestJson('api/voice-command.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' }, body: new URLSearchParams({ csrf_token: csrf.value, list_id: list ? list.dataset.listId : '0', transcription: finalTranscript }) })
+                    const commandContext = pendingVoiceCommand;
+                    pendingVoiceCommand = null;
+                    const requestBody = { csrf_token: csrf.value, list_id: list ? list.dataset.listId : '0', transcription: finalTranscript };
+                    if (commandContext) {
+                        requestBody.confirm_create = 'true';
+                        requestBody.pending_target_list = commandContext.target_list || '';
+                        requestBody.pending_item = commandContext.item || '';
+                    }
+                    requestJson('api/voice-command.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' }, body: new URLSearchParams(requestBody) })
                         .then(function (data) {
                             if (!data.ok) throw new Error(data.message || 'La commande vocale a échoué.');
                             showVoiceFeedback(finalTranscript, data.message_to_user);
                             speakVoiceMessage(data.message_to_user);
                             if (data.action === 'add') {
                                 showToast('Article ajouté à la liste.');
-                                if (list) syncItems(); else syncListSummaries();
+                                if (list) syncItems();
+                                syncListSummaries();
+                                window.setTimeout(closeVoiceFeedback, 700);
+                            } else if (data.pending && data.pending.target_list && data.pending.item) {
+                                pendingVoiceCommand = data.pending;
+                                window.setTimeout(handleMicrophoneClick, 1100);
                             }
                         })
                         .catch(function (error) {
+                            if (commandContext) pendingVoiceCommand = commandContext;
                             console.error('[Shoply voice] Backend error', error);
                             showVoiceFeedback(finalTranscript, error.message);
                             showToast(error.message);
                             speakVoiceMessage(error.message);
                         });
+                };
+                recognition.onstart = function () {
+                    if (voiceState) voiceState.textContent = 'Je vous écoute. Parlez maintenant...';
+                };
+                recognition.onsoundstart = function () {
+                    if (voiceState) voiceState.textContent = 'Je vous entends...';
                 };
                 recognition.onerror = function (event) {
                     if (event.error === 'aborted') {

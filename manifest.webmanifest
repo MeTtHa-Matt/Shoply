@@ -2,7 +2,7 @@
   "name": "Shoply - listes de courses",
   "short_name": "Shoply",
   "description": "Des courses plus simples, ensemble.",
-  "start_url": "./index.php?page=login",
+  "start_url": "./index.php?page=home",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f5f1e9",

@@ -511,6 +511,9 @@ if ($page === 'verify') {
 
 $flash = pull_flash();
 $user = current_user();
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && $user && in_array($page, ['login', 'register'], true)) {
+    redirect('index.php?page=home');
+}
 if ($page === 'home' && !$user) {
     redirect('index.php?page=login');
 }
@@ -709,5 +712,5 @@ if ($page === 'home' && $user) {
     <?php endif; ?>
     <footer class="footer"><span>© <?= date('Y') ?> Shoply</span><span>Simplement utile.</span></footer>
 </main>
-<script src="assets/js/app.js?v=42" defer></script>
+<script src="assets/js/app.js?v=47" defer></script>
 </body></html>
