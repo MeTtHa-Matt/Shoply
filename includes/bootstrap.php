@@ -41,7 +41,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: strict-origin-when-cross-origin');
-header("Content-Security-Policy: default-src 'self'; style-src 'self'; script-src 'self'; manifest-src 'self'; worker-src 'self'");
+header("Content-Security-Policy: default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; manifest-src 'self'; worker-src 'self'");
 
 function env_value(string $key, ?string $fallback = null): ?string
 {
@@ -61,6 +61,8 @@ function db(): PDO
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES => false,
     ]);
+    $pdo->exec("CREATE TABLE IF NOT EXISTS friend_groups (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, name VARCHAR(80) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_friend_group_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, UNIQUE KEY uq_friend_group_name (user_id, name)) ENGINE=InnoDB");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS friend_group_members (group_id INT UNSIGNED NOT NULL, friend_id INT UNSIGNED NOT NULL, assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (group_id, friend_id), CONSTRAINT fk_friend_group_member_group FOREIGN KEY (group_id) REFERENCES friend_groups(id) ON DELETE CASCADE, CONSTRAINT fk_friend_group_member_user FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB");
     return $pdo;
 }
 
@@ -130,4 +132,12 @@ function clear_old(): void
 function current_user(): ?array
 {
     return $_SESSION['user'] ?? null;
+}
+
+function json_response(array $payload, int $status = 200): never
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
 }
