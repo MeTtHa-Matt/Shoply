@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS remember_tokens (
     INDEX idx_remember_token_expiry (expires_at)
 ) ENGINE=InnoDB;
 
+    CREATE TABLE IF NOT EXISTS user_onboarding (
+        user_id INT UNSIGNED PRIMARY KEY,
+        completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_onboarding_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS shopping_lists (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     user_id INT UNSIGNED NOT NULL,
@@ -81,7 +87,8 @@ CREATE TABLE IF NOT EXISTS friendship_requests (
     CONSTRAINT fk_friend_request_receiver FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY uq_friend_request_pair (sender_id, receiver_id),
     INDEX idx_friend_request_receiver (receiver_id, status),
-    INDEX idx_friend_request_sender (sender_id, status)
+    INDEX idx_friend_request_sender (sender_id, status),
+    INDEX idx_friend_request_status_response (status, responded_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -96,7 +103,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     CONSTRAINT fk_notification_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_notification_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL,
     CONSTRAINT fk_notification_friend_request FOREIGN KEY (friendship_request_id) REFERENCES friendship_requests(id) ON DELETE CASCADE,
-    INDEX idx_notification_user (user_id, read_at, created_at)
+    INDEX idx_notification_user (user_id, read_at, created_at),
+    INDEX idx_notification_created_at (created_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS friend_groups (

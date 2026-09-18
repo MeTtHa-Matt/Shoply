@@ -73,6 +73,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $userId = (int) current_user()['id'];
         try {
             $database = db();
+            if ($action === 'complete_tutorial') {
+                $database->prepare('INSERT IGNORE INTO user_onboarding (user_id) VALUES (?)')->execute([$userId]);
+                json_response(['ok' => true]);
+            }
             if ($action === 'create_list') {
                 $listName = trim((string) ($_POST['list_name'] ?? ''));
                 if (mb_strlen($listName) < 2 || mb_strlen($listName) > 120) {
@@ -709,7 +713,11 @@ $searchUsers = [];
 $pendingFriendRequestIds = [];
 $notifications = [];
 $unreadNotifications = 0;
+$showTutorial = false;
 if ($page === 'home' && $user) {
+    $onboardingQuery = db()->prepare('SELECT user_id FROM user_onboarding WHERE user_id = ? LIMIT 1');
+    $onboardingQuery->execute([(int) $user['id']]);
+    $showTutorial = !$onboardingQuery->fetch();
     $view = $_GET['view'] ?? 'lists';
     if ($view === 'split') {
         $view = 'shared';
@@ -770,13 +778,14 @@ if ($page === 'home' && $user) {
     <meta name="description" content="Shoply, vos courses plus simples, ensemble.">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="assets/css/app.css?v=54">
+    <link rel="stylesheet" href="assets/css/app.css?v=59">
     <link rel="stylesheet" href="assets/css/siri.css?v=5">
     <title><?= e($title) ?> · Shoply</title>
 </head>
 <body class="<?= $user ? 'app-body' : 'auth-body' ?>" data-page="<?= e($page) ?>" data-user-id="<?= $user ? (int) $user['id'] : 0 ?>" data-persistent-auth="<?= !empty($_COOKIE[remember_cookie_name()]) ? 'true' : 'false' ?>">
 <div class="ambient ambient-one" aria-hidden="true"></div><div class="ambient ambient-two" aria-hidden="true"></div>
 <?php if ($showWelcome): ?><div class="welcome-screen" role="status" aria-live="polite"><strong>Bienvenue</strong><span><?= e($user['name']) ?></span></div><?php endif; ?>
+<?php if ($showTutorial): ?><div class="tutorial-screen" data-tutorial role="dialog" aria-modal="true" aria-labelledby="tutorial-title"><div class="tutorial-card"><button class="tutorial-skip" type="button" data-tutorial-skip>Passer</button><div class="tutorial-character" aria-hidden="true"><span class="tutorial-character-ear tutorial-character-ear-left"></span><span class="tutorial-character-ear tutorial-character-ear-right"></span><span class="tutorial-character-face"><i></i><i></i><b></b></span></div><div class="tutorial-kicker">BIENVENUE DANS SHOPLY</div><h2 id="tutorial-title" data-tutorial-title>Vos listes, enfin simples.</h2><p data-tutorial-copy>Créez une liste et gardez tout ce qu’il faut acheter au même endroit.</p><div class="tutorial-dots" aria-hidden="true"><i class="is-active"></i><i></i><i></i><i></i></div><button class="button button-primary tutorial-next" type="button" data-tutorial-next>Suivant <span aria-hidden="true">→</span></button></div></div><?php endif; ?>
 <?php if ($user): ?><div class="logout-screen" role="status" aria-live="polite"><strong>Déconnexion</strong><span class="logout-spinner" aria-hidden="true"></span></div><?php endif; ?>
 <main class="shell">
     <header class="topbar"><a class="brand" href="index.php?page=<?= $user ? 'home' : 'login' ?>" aria-label="Shoply, accueil"><span class="brand-mark">S</span><span>shoply<span class="dot">.</span></span></a><?php if ($user): ?><?php require ROOT_PATH . '/partials/siri.php'; ?><a class="notification-link" href="index.php?page=home&view=notifications" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><?php if ($unreadNotifications > 0): ?><b><?= $unreadNotifications > 9 ? '9+' : $unreadNotifications ?></b><?php endif; ?></a><?php endif; ?></header>
@@ -832,6 +841,6 @@ if ($page === 'home' && $user) {
     <?php endif; ?>
     <footer class="footer"><span>© <?= date('Y') ?> Shoply</span><span>Simplement utile.</span></footer>
 </main>
-<script src="assets/js/app.js?v=63" defer></script>
+<script src="assets/js/app.js?v=69" defer></script>
 <script type="module" src="assets/js/siri.js?v=5"></script>
 </body></html>

@@ -16,6 +16,17 @@ php -S 127.0.0.1:8080 -t .
 
 L'URL de verification email est generee depuis la requete courante. Elle suit donc automatiquement le domaine, le port et le sous-dossier utilises en local ou en production.
 
+## Retention des donnees
+
+A chaque ouverture de connexion PDO, Shoply supprime automatiquement les donnees temporaires ou historiques suivantes :
+
+- les jetons de verification expires et les jetons de connexion expires ;
+- les comptes non verifies apres 7 jours ;
+- les notifications apres 90 jours ;
+- les demandes d'amitie refusees apres 180 jours.
+
+Les listes, articles, comptes verifies, relations acceptees et partages actifs ne sont jamais supprimes par cette purge. Les durees peuvent etre surchargees dans `.env` avec `UNVERIFIED_USER_RETENTION_DAYS`, `NOTIFICATION_RETENTION_DAYS` et `DECLINED_REQUEST_RETENTION_DAYS`.
+
 ## Structure utile
 
 - `PROJECT_RULES.md`: regles fonctionnelles, securite et UI du projet.

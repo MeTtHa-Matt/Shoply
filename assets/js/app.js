@@ -727,6 +727,71 @@
     document.querySelectorAll('[data-pwa-ios-close]').forEach(function (control) { control.addEventListener('click', closePwaIosModal); });
     document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closePwaIosModal(); });
 
+    var tutorial = document.querySelector('[data-tutorial]');
+    if (tutorial && csrf) {
+        var tutorialTitle = tutorial.querySelector('[data-tutorial-title]');
+        var tutorialCopy = tutorial.querySelector('[data-tutorial-copy]');
+        var tutorialNext = tutorial.querySelector('[data-tutorial-next]');
+        var tutorialCard = tutorial.querySelector('.tutorial-card');
+        var tutorialDots = Array.from(tutorial.querySelectorAll('.tutorial-dots i'));
+        var tutorialStep = 0;
+        try { tutorialStep = Math.max(0, Math.min(4, Number(window.sessionStorage.getItem('shoply_tutorial_step') || 0))); } catch (error) {}
+        var tutorialSlides = [
+            ['Créer une liste', 'Le bouton + démarre une nouvelle liste pour organiser vos articles.'],
+            ['Suivre vos courses', 'La page Courses transforme chaque article en liste à cocher avec une progression claire.'],
+            ['Partager simplement', 'La page Partagé sert à ajouter vos proches et à envoyer une liste commune.'],
+            ['Votre espace personnel', 'Dans Profil, vous retrouvez vos proches et vos réglages personnels.'],
+            ['Votre assistant vocal', 'Le bouton Gemini vous permet de demander l’ajout d’articles avec votre voix.']
+        ];
+        while (tutorialDots.length < tutorialSlides.length) { var extraDot = document.createElement('i'); tutorial.querySelector('.tutorial-dots').appendChild(extraDot); tutorialDots.push(extraDot); }
+        var tutorialDestinations = ['index.php?page=home&view=lists', 'index.php?page=home&view=shop', 'index.php?page=home&view=shared', 'index.php?page=home&view=profile', 'index.php?page=home&view=profile'];
+        var tutorialTargets = ['.list-index-head .icon-button, .nav-create', '.nav-item[href*="view=shop"]', '.nav-item[href*="view=shared"]', '.nav-item[href*="view=profile"]', '.gemini-trigger'];
+        var tutorialDelay = tutorialStep === 0 ? 2800 : 150;
+        tutorial.style.animationDelay = (tutorialDelay / 1000) + 's';
+        window.setTimeout(function () { tutorial.classList.add('is-interactive'); }, tutorialDelay);
+        function positionTutorialCard() {
+            var target = document.querySelector(tutorialTargets[tutorialStep]);
+            if (!target || !tutorialCard) return;
+            var targetBox = target.getBoundingClientRect();
+            var cardWidth = Math.min(420, window.innerWidth - 32);
+            var cardHeight = tutorialCard.offsetHeight;
+            var left = Math.max(16, Math.min(window.innerWidth - cardWidth - 16, targetBox.left + (targetBox.width / 2) - (cardWidth / 2)));
+            var placeBelow = targetBox.top < window.innerHeight / 2;
+            var top = placeBelow ? targetBox.bottom + 18 : targetBox.top - cardHeight - 18;
+            top = Math.max(16, Math.min(window.innerHeight - cardHeight - 16, top));
+            tutorialCard.style.width = cardWidth + 'px';
+            tutorialCard.style.left = left + 'px';
+            tutorialCard.style.top = top + 'px';
+            tutorialCard.style.setProperty('--tutorial-arrow-left', Math.max(18, Math.min(cardWidth - 18, targetBox.left + (targetBox.width / 2) - left)) + 'px');
+            tutorialCard.classList.toggle('is-below', placeBelow);
+        }
+        function renderTutorialStep() {
+            tutorialTitle.textContent = tutorialSlides[tutorialStep][0];
+            tutorialCopy.textContent = tutorialSlides[tutorialStep][1];
+            tutorialDots.forEach(function (dot, index) { dot.classList.toggle('is-active', index === tutorialStep); });
+            document.querySelectorAll('.tutorial-highlight').forEach(function (element) { element.classList.remove('tutorial-highlight'); });
+            var target = document.querySelector(tutorialTargets[tutorialStep]);
+            if (target) target.classList.add('tutorial-highlight');
+            tutorialNext.innerHTML = tutorialStep === tutorialSlides.length - 1 ? 'Terminer <span aria-hidden="true">✓</span>' : 'Continuer <span aria-hidden="true">→</span>';
+            window.requestAnimationFrame(positionTutorialCard);
+        }
+        function finishTutorial() {
+            tutorial.classList.add('is-leaving');
+            try { window.sessionStorage.removeItem('shoply_tutorial_step'); } catch (error) {}
+            fetch('index.php?page=home', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'}, body: new URLSearchParams({ csrf_token: csrf.value, action: 'complete_tutorial' }) }).catch(function () {});
+            window.setTimeout(function () { tutorial.remove(); }, 350);
+        }
+        renderTutorialStep();
+        tutorialNext.addEventListener('click', function () {
+            tutorialStep += 1;
+            if (tutorialStep >= tutorialSlides.length) { finishTutorial(); return; }
+            try { window.sessionStorage.setItem('shoply_tutorial_step', String(tutorialStep)); } catch (error) {}
+            window.location.assign(tutorialDestinations[tutorialStep]);
+        });
+        tutorial.querySelector('[data-tutorial-skip]').addEventListener('click', finishTutorial);
+        window.addEventListener('resize', positionTutorialCard);
+    }
+
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', function () {
             navigator.serviceWorker.register('sw.js?v=22', { scope: './' }).catch(function () {});
