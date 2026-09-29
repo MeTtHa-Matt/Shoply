@@ -118,7 +118,9 @@ Shoply applique notamment les mesures suivantes :
 - mots de passe hashes avec `password_hash` ;
 - jetons opaques stockes sous forme de hash, a usage unique et expires ;
 - sessions regenerees apres authentification et cookies `HttpOnly` / `SameSite=Lax` ;
-- en-tetes HTTP de securite et politique CSP ;
+- en-tetes HTTP de securite, politique CSP restrictive et reponses applicatives non stockees ;
+- cache PWA limite aux ressources statiques de meme origine, sans mise en cache des pages ou donnees personnelles ;
+- liens email construits a partir du nom d'hote configure par le serveur, et non de l'en-tete `Host` du client ;
 - identifiants SQL et SMTP lus depuis `.env`, jamais affiches dans l'interface.
 
 ## Structure du projet

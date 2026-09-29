@@ -405,6 +405,7 @@
     });
 
     function updateNotificationBadge() {
+        if (document.visibilityState === 'hidden') return;
         requestJson('index.php?page=home&api=notifications').then(function (data) {
             var link = document.querySelector('.notification-link');
             if (!link) return;
@@ -415,7 +416,7 @@
             } else if (badge) badge.remove();
         }).catch(function () {});
     }
-    if (document.querySelector('.notification-link')) window.setInterval(updateNotificationBadge, 5000);
+    if (document.querySelector('.notification-link')) window.setInterval(updateNotificationBadge, 30000);
 
     function updateProgress(items) {
         var completed = items.filter(function (item) { return Number(item.is_done) === 1; }).length;
@@ -433,6 +434,7 @@
     }
 
     function syncListSummaries() {
+        if (document.visibilityState === 'hidden') return;
         requestJson('index.php?page=home&api=lists').then(function (data) {
             var summaries = data.lists || [];
             var availableIds = summaries.map(function (summary) { return String(summary.id); });
@@ -514,11 +516,11 @@
     }
     if (document.querySelector('.dashboard')) {
         syncListSummaries();
-        window.setInterval(syncListSummaries, 4000);
+        window.setInterval(syncListSummaries, 10000);
     }
 
     function syncItems() {
-        if (!list) return;
+        if (!list || document.visibilityState === 'hidden') return;
         requestJson('index.php?page=home&api=list_items&list_id=' + encodeURIComponent(list.dataset.listId)).then(function (data) {
             updateProgress(data.items);
             if (noteEditor && list.classList.contains('note-list')) {
@@ -536,7 +538,14 @@
         }).catch(function () {});
     }
 
-    if (list) window.setInterval(syncItems, 4000);
+    if (list) window.setInterval(syncItems, 10000);
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState !== 'visible') return;
+        if (document.querySelector('.notification-link')) updateNotificationBadge();
+        if (document.querySelector('.dashboard')) syncListSummaries();
+        if (list) syncItems();
+    });
 
     if (list && csrf) {
         list.addEventListener('click', function (event) {

@@ -41,7 +41,9 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: strict-origin-when-cross-origin');
-header("Content-Security-Policy: default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; manifest-src 'self'; worker-src 'self'");
+header('Cache-Control: no-store, private');
+header('Pragma: no-cache');
+header("Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; manifest-src 'self'; worker-src 'self'");
 
 function env_value(string $key, ?string $fallback = null): ?string
 {
@@ -126,8 +128,16 @@ function verify_csrf(): bool
 function app_base_url(): string
 {
     $forwarded = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
-    $scheme = $forwarded !== '' ? $forwarded : (((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http'));
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || strtolower((string) $forwarded) === 'https';
+    $scheme = $isHttps ? 'https' : 'http';
+    $host = strtolower((string) ($_SERVER['SERVER_NAME'] ?? 'localhost'));
+    if (!preg_match('/^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|localhost|\[[a-f0-9:]+\])$/', $host)) {
+        $host = 'localhost';
+    }
+    $port = (int) ($_SERVER['SERVER_PORT'] ?? ($isHttps ? 443 : 80));
+    if (($isHttps && $port !== 443) || (!$isHttps && $port !== 80)) {
+        $host .= ':' . $port;
+    }
     $script = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/'));
     $basePath = $script === '/' || $script === '.' ? '' : rtrim($script, '/');
     return $scheme . '://' . $host . $basePath;
